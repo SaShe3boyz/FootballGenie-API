@@ -115,7 +115,7 @@ const startDate = dateFrom ||
 
 const endBase = new Date(startDate + "T00:00:00Z");
 
-endBase.setUTCDate(endBase.getUTCDate() + 21);
+endBase.setUTCDate(endBase.getUTCDate() + 10);
 
 const endDate = dateTo ||
     endBase.toISOString().slice(0, 10);
@@ -146,12 +146,12 @@ if (!response.ok) {
 res.json(data);
 
 } catch (error) {
-console.error("Match request failed:", error.message);
+    console.error("Football matches error:", error);
 
-res.status(502).json({
-  error: "Unable to retrieve football matches."
-});
-
+    res.status(502).json({
+        error: "Unable to retrieve football matches.",
+        details: error.message || "Unknown server error."
+    });
 }
 });
 
