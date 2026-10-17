@@ -323,6 +323,12 @@ app.get("/api/team-stats", async (req, res) => {
         let over25 = 0;
         let btts = 0;
         let form = "";
+        let homeVenuePlayed = 0;
+        let homeVenueGoalsFor = 0;
+        let homeVenueGoalsAgainst = 0;
+        let awayVenuePlayed = 0;
+        let awayVenueGoalsFor = 0;
+        let awayVenueGoalsAgainst = 0;
 
         const recentMatches = matches
             .filter(match => match && match.status === "FINISHED")
@@ -348,6 +354,15 @@ app.get("/api/team-stats", async (req, res) => {
                 played++;
                 goalsFor += scored;
                 goalsAgainst += conceded;
+                if (isHome) {
+                    homeVenuePlayed++;
+                    homeVenueGoalsFor += scored;
+                    homeVenueGoalsAgainst += conceded;
+                } else {
+                    awayVenuePlayed++;
+                    awayVenueGoalsFor += scored;
+                    awayVenueGoalsAgainst += conceded;
+                }
                 if (outcome === "W") wins++;
                 else if (outcome === "D") draws++;
                 else losses++;
@@ -382,6 +397,18 @@ app.get("/api/team-stats", async (req, res) => {
                 conceded: goalsAgainst,
                 averageScored: played ? Number((goalsFor / played).toFixed(2)) : 0,
                 averageConceded: played ? Number((goalsAgainst / played).toFixed(2)) : 0
+            },
+            venueStats: {
+                home: {
+                    sampleSize: homeVenuePlayed,
+                    averageScored: homeVenuePlayed ? Number((homeVenueGoalsFor / homeVenuePlayed).toFixed(2)) : 0,
+                    averageConceded: homeVenuePlayed ? Number((homeVenueGoalsAgainst / homeVenuePlayed).toFixed(2)) : 0
+                },
+                away: {
+                    sampleSize: awayVenuePlayed,
+                    averageScored: awayVenuePlayed ? Number((awayVenueGoalsFor / awayVenuePlayed).toFixed(2)) : 0,
+                    averageConceded: awayVenuePlayed ? Number((awayVenueGoalsAgainst / awayVenuePlayed).toFixed(2)) : 0
+                }
             },
             cleanSheets: cleanSheets,
             over25Percent: played ? Number((over25 * 100 / played).toFixed(1)) : 0,
