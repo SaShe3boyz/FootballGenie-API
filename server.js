@@ -238,43 +238,6 @@ try {
 }
 });
 
-const responseText = await response.text();
-
-let data;
-
-try {
-    data = JSON.parse(responseText);
-} catch (parseError) {
-    console.error(
-        "Football provider returned non-JSON:",
-        response.status,
-        responseText.slice(0, 300)
-    );
-
-    return res.status(502).json({
-        error: "Football data provider returned a non-JSON response.",
-        providerStatus: response.status
-    });
-}
-if (!response.ok) {
-  return res.status(response.status).json({
-    error: "Football data provider returned an error.",
-    details: data.message || "Request failed"
-  });
-}
-
-res.json(data);
-
-} catch (error) {
-    console.error("Football matches error:", error);
-
-    res.status(502).json({
-        error: "Unable to retrieve football matches.",
-        details: error.message || "Unknown server error."
-    });
-}
-});
-
 app.listen(PORT, "0.0.0.0", () => {
 console.log("Football Genie API is running on port " + PORT);
 });
