@@ -134,8 +134,24 @@ headers: { "X-Auth-Token": API_TOKEN },
 signal: AbortSignal.timeout(10000)
 });
 
-const data = await response.json();
+const responseText = await response.text();
 
+let data;
+
+try {
+    data = JSON.parse(responseText);
+} catch (parseError) {
+    console.error(
+        "Football provider returned non-JSON:",
+        response.status,
+        responseText.slice(0, 300)
+    );
+
+    return res.status(502).json({
+        error: "Football data provider returned a non-JSON response.",
+        providerStatus: response.status
+    });
+}
 if (!response.ok) {
   return res.status(response.status).json({
     error: "Football data provider returned an error.",
