@@ -108,32 +108,134 @@ error: "Dates must use YYYY-MM-DD format."
 });
 }
 
-const params = new URLSearchParams();
-
 const defaultStart = new Date();
 defaultStart.setUTCDate(defaultStart.getUTCDate() - 3);
 
 const startDate = dateFrom ||
     defaultStart.toISOString().slice(0, 10);
 
-const endBase = new Date(startDate + "T00:00:00Z");
-
-endBase.setUTCDate(endBase.getUTCDate() + 10);
+const firstEndDate = new Date(startDate + "T00:00:00Z");
+firstEndDate.setUTCDate(firstEndDate.getUTCDate() + 10);
 
 const endDate = dateTo ||
-    endBase.toISOString().slice(0, 10);
+    firstEndDate.toISOString().slice(0, 10);
 
-params.set("dateFrom", startDate);
-params.set("dateTo", endDate);
+// The provider limits each date-range request, so use two consecutive
+// windows by default. This gives the app a longer view of each competition
+// without exceeding the provider's per-request date-range limit.
+const windows = [];
+if (!dateFrom && !dateTo) {
+    const secondStart = new Date(firstEndDate);
+    secondStart.setUTCDate(secondStart.getUTCDate() + 1);
+    const secondEnd = new Date(secondStart);
+    secondEnd.setUTCDate(secondEnd.getUTCDate() + 10);
 
-const query = params.toString();
-const url =
-"https://api.football-data.org/v4/matches" +
-(query ? `?${query}` : "");
+    windows.push(
+        { from: startDate, to: endDate },
+        {
+            from: secondStart.toISOString().slice(0, 10),
+            to: secondEnd.toISOString().slice(0, 10)
+        }
+    );
+} else {
+    const effectiveEnd = dateTo || endDate;
+    windows.push({ from: startDate, to: effectiveEnd });
+}
+
 try {
-const response = await fetch(url, {
-headers: { "X-Auth-Token": API_TOKEN },
-signal: AbortSignal.timeout(10000)
+    const allMatches = new Map();
+    let combinedData = null;
+    let playedCount = 0;
+
+    for (const window of windows) {
+        const params = new URLSearchParams();
+        params.set("dateFrom", window.from);
+        params.set("dateTo", window.to);
+
+        const url =
+            "https://api.football-data.org/v4/matches?" +
+            params.toString();
+
+        const response = await fetch(url, {
+            headers: { "X-Auth-Token": API_TOKEN },
+            signal: AbortSignal.timeout(10000)
+        });
+
+        const responseText = await response.text();
+        let data;
+
+        try {
+            data = JSON.parse(responseText);
+        } catch (parseError) {
+            console.error(
+                "Football provider returned non-JSON:",
+                response.status,
+                responseText.slice(0, 300)
+            );
+
+            return res.status(502).json({
+                error: "Football data provider returned a non-JSON response.",
+                providerStatus: response.status
+            });
+        }
+
+        if (!response.ok) {
+            return res.status(response.status).json({
+                error: "Football data provider returned an error.",
+                details: data.message || "Request failed"
+            });
+        }
+
+        if (!combinedData) {
+            combinedData = data;
+        }
+
+        const matches = Array.isArray(data.matches) ? data.matches : [];
+        for (const match of matches) {
+            if (match && match.id != null) {
+                allMatches.set(match.id, match);
+            }
+        }
+
+        playedCount += Number(data.resultSet?.played || 0);
+    }
+
+    const matches = Array.from(allMatches.values()).sort(
+        (a, b) => new Date(a.utcDate) - new Date(b.utcDate)
+    );
+
+    const firstDate = matches.length
+        ? matches[0].utcDate.slice(0, 10)
+        : startDate;
+    const lastDate = matches.length
+        ? matches[matches.length - 1].utcDate.slice(0, 10)
+        : (windows[windows.length - 1].to);
+
+    res.json({
+        ...combinedData,
+        filters: {
+            ...(combinedData.filters || {}),
+            dateFrom: startDate,
+            dateTo: windows[windows.length - 1].to
+        },
+        resultSet: {
+            ...(combinedData.resultSet || {}),
+            count: matches.length,
+            first: firstDate,
+            last: lastDate,
+            played: playedCount
+        },
+        matches
+    });
+
+} catch (error) {
+    console.error("Football matches error:", error);
+
+    res.status(502).json({
+        error: "Unable to retrieve football matches.",
+        details: error.message || "Unknown server error."
+    });
+}
 });
 
 const responseText = await response.text();
