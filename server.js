@@ -302,8 +302,17 @@ app.get("/api/team-stats", async (req, res) => {
             });
         }
 
-        const team = data.team || { id: Number(teamId), name: "Team " + teamId };
         const matches = Array.isArray(data.matches) ? data.matches : [];
+        const matchingTeamMatch = matches.find(match =>
+            Number(match.homeTeam && match.homeTeam.id) === Number(teamId) ||
+            Number(match.awayTeam && match.awayTeam.id) === Number(teamId)
+        );
+        const inferredTeamName = matchingTeamMatch
+            ? (Number(matchingTeamMatch.homeTeam && matchingTeamMatch.homeTeam.id) === Number(teamId)
+                ? matchingTeamMatch.homeTeam.name
+                : matchingTeamMatch.awayTeam.name)
+            : "Team " + teamId;
+        const team = data.team || { id: Number(teamId), name: inferredTeamName };
         let played = 0;
         let wins = 0;
         let draws = 0;
