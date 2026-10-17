@@ -251,7 +251,7 @@ app.get("/api/team-stats", async (req, res) => {
     const teamId = String(req.query.teamId || "");
     const requestedLimit = Number(req.query.limit || 10);
 
-    if (!/^\\d+$/.test(teamId) || Number(teamId) <= 0) {
+    if (!/^\d+$/.test(teamId) || Number(teamId) <= 0) {
         return res.status(400).json({
             error: "A valid numeric teamId is required."
         });
