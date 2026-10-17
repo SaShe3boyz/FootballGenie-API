@@ -110,8 +110,11 @@ error: "Dates must use YYYY-MM-DD format."
 
 const params = new URLSearchParams();
 
+const defaultStart = new Date();
+defaultStart.setUTCDate(defaultStart.getUTCDate() - 3);
+
 const startDate = dateFrom ||
-    new Date().toISOString().slice(0, 10);
+    defaultStart.toISOString().slice(0, 10);
 
 const endBase = new Date(startDate + "T00:00:00Z");
 
