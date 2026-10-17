@@ -126,8 +126,7 @@ params.set("dateTo", endDate);
 const query = params.toString();
 const url =
 "https://api.football-data.org/v4/matches" +
-(query ? "?${query}" : "");
-
+(query ? `?${query}` : "");
 try {
 const response = await fetch(url, {
 headers: { "X-Auth-Token": API_TOKEN },
