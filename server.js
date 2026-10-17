@@ -238,6 +238,156 @@ try {
 }
 });
 
+
+// Return recent finished-match performance for one team.
+// The provider token remains on the server and is never sent to the app.
+app.get("/api/team-stats", async (req, res) => {
+    if (!API_TOKEN) {
+        return res.status(500).json({
+            error: "Football data API token is not configured."
+        });
+    }
+
+    const teamId = String(req.query.teamId || "");
+    const requestedLimit = Number(req.query.limit || 10);
+
+    if (!/^\d+$/.test(teamId) || Number(teamId) <= 0) {
+        return res.status(400).json({
+            error: "A valid numeric teamId is required."
+        });
+    }
+
+    if (!Number.isInteger(requestedLimit) || requestedLimit < 5 || requestedLimit > 20) {
+        return res.status(400).json({
+            error: "limit must be a whole number between 5 and 20."
+        });
+    }
+
+    try {
+        const params = new URLSearchParams();
+        params.set("status", "FINISHED");
+        params.set("limit", String(requestedLimit));
+
+        const response = await fetch(
+            "https://api.football-data.org/v4/teams/" +
+            encodeURIComponent(teamId) +
+            "/matches?" + params.toString(),
+            {
+                headers: { "X-Auth-Token": API_TOKEN },
+                signal: AbortSignal.timeout(10000)
+            }
+        );
+
+        const responseText = await response.text();
+        let data;
+
+        try {
+            data = JSON.parse(responseText);
+        } catch (parseError) {
+            console.error(
+                "Team matches provider returned non-JSON:",
+                response.status,
+                responseText.slice(0, 300)
+            );
+            return res.status(502).json({
+                error: "Football data provider returned a non-JSON response.",
+                providerStatus: response.status
+            });
+        }
+
+        if (!response.ok) {
+            return res.status(response.status).json({
+                error: "Football data provider returned an error.",
+                details: data.message || "Request failed"
+            });
+        }
+
+        const team = data.team || { id: Number(teamId), name: "Team " + teamId };
+        const matches = Array.isArray(data.matches) ? data.matches : [];
+        let played = 0;
+        let wins = 0;
+        let draws = 0;
+        let losses = 0;
+        let goalsFor = 0;
+        let goalsAgainst = 0;
+        let cleanSheets = 0;
+        let over25 = 0;
+        let btts = 0;
+        let form = "";
+
+        const recentMatches = matches
+            .filter(match => match && match.status === "FINISHED")
+            .sort((a, b) => new Date(b.utcDate) - new Date(a.utcDate))
+            .map(match => {
+                const isHome = Number(match.homeTeam && match.homeTeam.id) === Number(teamId);
+                const isAway = Number(match.awayTeam && match.awayTeam.id) === Number(teamId);
+                if (!isHome && !isAway) return null;
+
+                const homeGoals = match.score && match.score.fullTime
+                    ? match.score.fullTime.home
+                    : null;
+                const awayGoals = match.score && match.score.fullTime
+                    ? match.score.fullTime.away
+                    : null;
+
+                if (homeGoals == null || awayGoals == null) return null;
+
+                const scored = isHome ? homeGoals : awayGoals;
+                const conceded = isHome ? awayGoals : homeGoals;
+                const outcome = scored > conceded ? "W" : (scored === conceded ? "D" : "L");
+
+                played++;
+                goalsFor += scored;
+                goalsAgainst += conceded;
+                if (outcome === "W") wins++;
+                else if (outcome === "D") draws++;
+                else losses++;
+                if (conceded === 0) cleanSheets++;
+                if (homeGoals + awayGoals > 2) over25++;
+                if (homeGoals > 0 && awayGoals > 0) btts++;
+                form += outcome;
+
+                return {
+                    matchId: match.id,
+                    date: match.utcDate,
+                    competition: match.competition ? match.competition.name : "",
+                    opponent: isHome
+                        ? (match.awayTeam ? match.awayTeam.name : "Unknown")
+                        : (match.homeTeam ? match.homeTeam.name : "Unknown"),
+                    venue: isHome ? "HOME" : "AWAY",
+                    score: String(homeGoals) + "-" + String(awayGoals),
+                    goalsFor: scored,
+                    goalsAgainst: conceded,
+                    result: outcome
+                };
+            })
+            .filter(Boolean);
+
+        res.json({
+            team: { id: Number(teamId), name: team.name },
+            sampleSize: played,
+            form: form,
+            record: { wins, draws, losses },
+            goals: {
+                scored: goalsFor,
+                conceded: goalsAgainst,
+                averageScored: played ? Number((goalsFor / played).toFixed(2)) : 0,
+                averageConceded: played ? Number((goalsAgainst / played).toFixed(2)) : 0
+            },
+            cleanSheets: cleanSheets,
+            over25Percent: played ? Number((over25 * 100 / played).toFixed(1)) : 0,
+            bttsPercent: played ? Number((btts * 100 / played).toFixed(1)) : 0,
+            matches: recentMatches
+        });
+    } catch (error) {
+        console.error("Team stats request failed:", error.message);
+        return res.status(502).json({
+            error: "Unable to retrieve recent team performance.",
+            details: error.message || "Unknown server error."
+        });
+    }
+});
+
 app.listen(PORT, "0.0.0.0", () => {
 console.log("Football Genie API is running on port " + PORT);
 });
