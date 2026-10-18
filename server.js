@@ -239,6 +239,90 @@ try {
 });
 
 
+// Return current competition home/away scoring baselines and team strength rates.
+// These season rates let the app adjust recent form for the level of opposition.
+app.get("/api/competition-strength", async (req, res) => {
+    if (!API_TOKEN) {
+        return res.status(500).json({ error: "Football data API token is not configured." });
+    }
+
+    const competitionId = String(req.query.competitionId || "");
+    if (!/^\d+$/.test(competitionId) || Number(competitionId) <= 0) {
+        return res.status(400).json({ error: "A valid numeric competitionId is required." });
+    }
+
+    try {
+        const response = await fetch(
+            "https://api.football-data.org/v4/competitions/" +
+            encodeURIComponent(competitionId) + "/standings",
+            {
+                headers: { "X-Auth-Token": API_TOKEN },
+                signal: AbortSignal.timeout(10000)
+            }
+        );
+        const responseText = await response.text();
+        let data;
+        try {
+            data = JSON.parse(responseText);
+        } catch (error) {
+            return res.status(502).json({ error: "Football data provider returned a non-JSON response." });
+        }
+        if (!response.ok) {
+            return res.status(response.status).json({
+                error: "Competition standings are unavailable.",
+                details: data.message || "Request failed"
+            });
+        }
+
+        const standings = Array.isArray(data.standings) ? data.standings : [];
+        const homeRows = (standings.find(item => item.type === "HOME") || {}).table || [];
+        const awayRows = (standings.find(item => item.type === "AWAY") || {}).table || [];
+        const totalRows = (standings.find(item => item.type === "TOTAL") || {}).table || [];
+
+        const average = (rows, field) => {
+            const played = rows.reduce((sum, row) => sum + (Number(row.playedGames) || 0), 0);
+            const goals = rows.reduce((sum, row) => sum + (Number(row[field]) || 0), 0);
+            return played > 0 ? goals / played : 0;
+        };
+        const homeLeagueGoals = average(homeRows, "goalsFor");
+        const awayLeagueGoals = average(awayRows, "goalsFor");
+        if (!homeRows.length || !awayRows.length || homeLeagueGoals <= 0 || awayLeagueGoals <= 0) {
+            return res.status(422).json({ error: "Usable home/away competition standings are unavailable." });
+        }
+
+        const teamMap = {};
+        for (const row of homeRows) {
+            if (!row.team || row.team.id == null) continue;
+            const played = Number(row.playedGames) || 0;
+            teamMap[String(row.team.id)] = {
+                teamId: Number(row.team.id),
+                homePlayed: played,
+                homeScored: played ? (Number(row.goalsFor) || 0) / played : homeLeagueGoals,
+                homeConceded: played ? (Number(row.goalsAgainst) || 0) / played : awayLeagueGoals
+            };
+        }
+        for (const row of awayRows) {
+            if (!row.team || row.team.id == null) continue;
+            const played = Number(row.playedGames) || 0;
+            const id = String(row.team.id);
+            if (!teamMap[id]) teamMap[id] = { teamId: Number(row.team.id) };
+            teamMap[id].awayPlayed = played;
+            teamMap[id].awayScored = played ? (Number(row.goalsFor) || 0) / played : awayLeagueGoals;
+            teamMap[id].awayConceded = played ? (Number(row.goalsAgainst) || 0) / played : homeLeagueGoals;
+        }
+
+        res.json({
+            competition: data.competition || { id: Number(competitionId) },
+            homeLeagueGoalsPerMatch: Number(homeLeagueGoals.toFixed(3)),
+            awayLeagueGoalsPerMatch: Number(awayLeagueGoals.toFixed(3)),
+            teams: Object.values(teamMap)
+        });
+    } catch (error) {
+        console.error("Competition strength request failed:", error.message);
+        return res.status(502).json({ error: "Unable to retrieve competition standings." });
+    }
+});
+
 // Return recent finished-match performance for one team.
 // The provider token remains on the server and is never sent to the app.
 app.get("/api/team-stats", async (req, res) => {
