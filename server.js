@@ -462,6 +462,11 @@ app.get("/api/team-stats", async (req, res) => {
                     opponent: isHome
                         ? (match.awayTeam ? match.awayTeam.name : "Unknown")
                         : (match.homeTeam ? match.homeTeam.name : "Unknown"),
+                    opponentId: isHome
+                        ? (match.awayTeam ? match.awayTeam.id : null)
+                        : (match.homeTeam ? match.homeTeam.id : null),
+                    competitionId: match.competition && match.competition.id
+                        ? match.competition.id : null,
                     venue: isHome ? "HOME" : "AWAY",
                     score: String(homeGoals) + "-" + String(awayGoals),
                     goalsFor: scored,
