@@ -497,7 +497,7 @@ app.get("/api/team-stats", async (req, res) => {
 });
 
 
-// Groq is an independent, OpenAI-compatible backup provider for Gemini outages.
+// Groq is the primary AI provider for Football Genie.
 async function requestGroqAnswer(systemInstruction, userContent) {
     if (!process.env.GROQ_API_KEY) return null;
     const model = process.env.GROQ_MODEL || "openai/gpt-oss-120b";
@@ -546,7 +546,7 @@ async function sendGroqFallback(res, systemInstruction, userContent, evidence) {
 }
 
 // Evidence-grounded conversational analysis. Provider keys stay on the server.
-// Gemini is primary; Groq is the first backup for provider overload, then OpenAI if configured.
+// Groq is primary; OpenAI is an optional fallback if Groq is unavailable.
 app.post("/api/ai/analyze", async (req, res) => {
     const prompt = String(req.body && req.body.question || "").trim();
     const context = req.body && req.body.match && typeof req.body.match === "object"
@@ -586,66 +586,19 @@ app.post("/api/ai/analyze", async (req, res) => {
         JSON.stringify(completedHistory);
 
     try {
-        if (process.env.GEMINI_API_KEY) {
-            const model = process.env.GEMINI_MODEL || "gemini-3.8-flash";
-            const url = "https://generativelanguage.googleapis.com/v1beta/models/" +
-                encodeURIComponent(model) + ":generateContent";
-            const requestBody = JSON.stringify({
-                systemInstruction: { parts: [{ text: systemInstruction }] },
-                contents: [{ role: "user", parts: [{ text: userContent }] }],
-                generationConfig: { temperature: 0.2, maxOutputTokens: 650 }
-            });
-            // Gemini may return 503 or briefly fail to connect during high demand.
-            // Give each attempt its own timeout signal and retry transient failures.
-            let response;
-            let lastNetworkError = null;
-            for (let attempt = 0; attempt < 3; attempt++) {
-                try {
-                    response = await fetch(url, {
-                        method: "POST",
-                        headers: {
-                            "x-goog-api-key": process.env.GEMINI_API_KEY,
-                            "Content-Type": "application/json"
-                        },
-                        body: requestBody,
-                        signal: AbortSignal.timeout(30000)
-                    });
-                    const retryableStatus = [429, 500, 502, 503, 504].includes(response.status);
-                    if (!retryableStatus || attempt === 2) break;
-                } catch (networkError) {
-                    lastNetworkError = networkError;
-                    if (attempt === 2) {
-                        console.error("Gemini connection failure after retries:", networkError.name, networkError.message);
-                        break;
-                    }
-                }
-                await new Promise(resolve => setTimeout(resolve, 900 * (attempt + 1)));
+        // Groq is the sole primary AI provider. OpenAI is an optional independent fallback.
+        if (process.env.GROQ_API_KEY) {
+            try {
+                const result = await requestGroqAnswer(systemInstruction, userContent);
+                return res.json({
+                    answer: result.answer,
+                    provider: "groq",
+                    model: result.model,
+                    evidenceUsed: evidence
+                });
+            } catch (groqError) {
+                console.error("Groq primary provider failed; trying OpenAI fallback:", groqError.message);
             }
-            if (!response) {
-                console.error("Gemini unavailable after retries:", lastNetworkError && lastNetworkError.message);
-                if (await sendGroqFallback(res, systemInstruction, userContent, evidence)) return;
-            } else {
-                const textBody = await response.text();
-                let data;
-                try { data = JSON.parse(textBody); }
-                catch (_) { data = {}; }
-                if (!response.ok) {
-                    const providerMessage = String(data.error && data.error.message || "Unknown Gemini provider error").slice(0, 500);
-                    console.error("Gemini provider error:", response.status, providerMessage);
-                    if (await sendGroqFallback(res, systemInstruction, userContent, evidence)) return;
-                } else {
-                    const answer = data.candidates && data.candidates[0] && data.candidates[0].content &&
-                        Array.isArray(data.candidates[0].content.parts)
-                        ? data.candidates[0].content.parts.map(part => String(part.text || "")).join("").trim() : "";
-                    if (answer) return res.json({ answer, provider: "google-gemini", model, evidenceUsed: evidence });
-                    console.error("Gemini returned an empty answer.");
-                    if (await sendGroqFallback(res, systemInstruction, userContent, evidence)) return;
-                }
-            }
-        }
-
-        if (process.env.GROQ_API_KEY && !process.env.GEMINI_API_KEY) {
-            if (await sendGroqFallback(res, systemInstruction, userContent, evidence)) return;
         }
 
         if (process.env.OPENAI_API_KEY) {
@@ -683,7 +636,7 @@ app.post("/api/ai/analyze", async (req, res) => {
 
         return res.status(503).json({
             code: "AI_NOT_CONFIGURED",
-            error: "Cloud AI is not configured. Add GEMINI_API_KEY for Gemini, GROQ_API_KEY for Groq backup, or OPENAI_API_KEY for OpenAI."
+            error: "Cloud AI is not configured. Add GROQ_API_KEY for Groq, or OPENAI_API_KEY for the optional OpenAI fallback."
         });
     } catch (error) {
         console.error("AI analysis request failed:", error.name, error.message);
