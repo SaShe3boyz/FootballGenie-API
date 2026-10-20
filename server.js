@@ -644,7 +644,7 @@ app.post("/api/ai/analyze", async (req, res) => {
             }
         }
 
-        if (process.env.GROQ_API_KEY) {
+        if (process.env.GROQ_API_KEY && !process.env.GEMINI_API_KEY) {
             if (await sendGroqFallback(res, systemInstruction, userContent, evidence)) return;
         }
 
