@@ -562,7 +562,8 @@ app.post("/api/ai/analyze", async (req, res) => {
                         body: requestBody,
                         signal: AbortSignal.timeout(30000)
                     });
-                    if (response.status !== 503 || attempt === 2) break;
+                    const retryableStatus = [429, 500, 502, 503, 504].includes(response.status);
+                    if (!retryableStatus || attempt === 2) break;
                 } catch (networkError) {
                     lastNetworkError = networkError;
                     if (attempt === 2) {
