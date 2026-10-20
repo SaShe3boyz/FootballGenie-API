@@ -513,6 +513,22 @@ app.post("/api/ai/analyze", async (req, res) => {
         const value = Number(context[field]);
         evidence[field] = Number.isFinite(value) ? Math.max(0, Math.min(100, value)) : null;
     }
+    const completedHistory = (Array.isArray(req.body && req.body.completedHistory)
+        ? req.body.completedHistory : []).slice(0, 15).map(item => {
+            const clean = {
+                home: String(item && item.home || "").slice(0, 80),
+                away: String(item && item.away || "").slice(0, 80)
+            };
+            for (const field of ["predictedHome", "predictedAway", "actualHome", "actualAway"]) {
+                const value = Number(item && item[field]);
+                clean[field] = Number.isFinite(value) ? Math.max(-1, Math.min(20, value)) : null;
+            }
+            for (const field of ["homeXg", "awayXg", "homeP", "drawP", "awayP", "overP", "bttsP"]) {
+                const value = Number(item && item[field]);
+                clean[field] = Number.isFinite(value) ? Math.max(0, Math.min(100, value)) : null;
+            }
+            return clean;
+        });
     if (!process.env.OPENAI_API_KEY) {
         return res.status(503).json({
             code: "AI_NOT_CONFIGURED",
@@ -533,12 +549,14 @@ app.post("/api/ai/analyze", async (req, res) => {
                 messages: [
                     {
                         role: "system",
-                        content: "You are Football Genie, a careful football-model analyst. Explain predictions using only the evidence provided. Separate observed data from model estimates. Do not invent injuries, line-ups, live match events, possession, shots, or external facts. Expected goals are estimates, not actual goals. Explain uncertainty and avoid guarantees or betting certainty. If the evidence is insufficient, say what is missing. Keep the answer practical and readable on a phone."
+                        content: "You are Football Genie, a careful football-model analyst. Explain predictions using only the evidence provided. Separate observed data from model estimates. Do not invent injuries, line-ups, live match events, possession, shots, or external facts. Expected goals are estimates, not actual goals. If completed match history is supplied, compare predicted versus actual scores, identify recurring error patterns and suggest testable improvements, clearly noting small-sample limitations. You may recommend experiments but must never claim that you changed or trained the app's model. Explain uncertainty and avoid guarantees or betting certainty. If the evidence is insufficient, say what is missing. Keep the answer practical and readable on a phone."
                     },
                     {
                         role: "user",
                         content: "Question: " + prompt + "\nMatch evidence (percentages are model probabilities, not live facts):\n" +
-                            JSON.stringify({ home, away, ...evidence })
+                            JSON.stringify({ home, away, ...evidence }) +
+                            "\nCompleted saved predictions with actual scores (historical evidence only; newest first):\n" +
+                            JSON.stringify(completedHistory)
                     }
                 ]
             }),
