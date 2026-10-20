@@ -103,8 +103,8 @@ app.get("/api/matches", async (req, res) => {
 
     const { dateFrom, dateTo } = req.query;
     if (
-        (dateFrom && !/^\\d{4}-\\d{2}-\\d{2}$/.test(dateFrom)) ||
-        (dateTo && !/^\\d{4}-\\d{2}-\\d{2}$/.test(dateTo))
+        (dateFrom && !/^\d{4}-\d{2}-\d{2}$/.test(dateFrom)) ||
+        (dateTo && !/^\d{4}-\d{2}-\d{2}$/.test(dateTo))
     ) {
         return res.status(400).json({ error: "Dates must use YYYY-MM-DD format." });
     }
