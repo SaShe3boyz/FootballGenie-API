@@ -497,7 +497,8 @@ app.get("/api/team-stats", async (req, res) => {
 });
 
 
-// Evidence-grounded conversational analysis. The provider key stays on the server.
+// Evidence-grounded conversational analysis. Provider keys stay on the server.
+// Gemini is preferred when GEMINI_API_KEY is configured; OpenAI remains as a fallback.
 app.post("/api/ai/analyze", async (req, res) => {
     const prompt = String(req.body && req.body.question || "").trim();
     const context = req.body && req.body.match && typeof req.body.match === "object"
@@ -529,51 +530,85 @@ app.post("/api/ai/analyze", async (req, res) => {
             }
             return clean;
         });
-    if (!process.env.OPENAI_API_KEY) {
+
+    const systemInstruction = "You are Football Genie, a careful football-model analyst. Explain predictions using only the evidence provided. Separate observed data from model estimates. Do not invent injuries, line-ups, live match events, possession, shots, or external facts. Expected goals are estimates, not actual goals. If completed match history is supplied, compare predicted versus actual scores, identify recurring error patterns and suggest testable improvements, clearly noting small-sample limitations. You may recommend experiments but must never claim that you changed or trained the app's model. Explain uncertainty and avoid guarantees or betting certainty. If the evidence is insufficient, say what is missing. Keep the answer practical and readable on a phone.";
+    const userContent = "Question: " + prompt + "\nMatch evidence (percentages are model probabilities, not live facts):\n" +
+        JSON.stringify({ home, away, ...evidence }) +
+        "\nCompleted saved predictions with actual scores (historical evidence only; newest first):\n" +
+        JSON.stringify(completedHistory);
+
+    try {
+        if (process.env.GEMINI_API_KEY) {
+            const model = process.env.GEMINI_MODEL || "gemini-2.5-flash";
+            const url = "https://generativelanguage.googleapis.com/v1beta/models/" +
+                encodeURIComponent(model) + ":generateContent";
+            const response = await fetch(url, {
+                method: "POST",
+                headers: {
+                    "x-goog-api-key": process.env.GEMINI_API_KEY,
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify({
+                    systemInstruction: { parts: [{ text: systemInstruction }] },
+                    contents: [{ role: "user", parts: [{ text: userContent }] }],
+                    generationConfig: { temperature: 0.2, maxOutputTokens: 650 }
+                }),
+                signal: AbortSignal.timeout(22000)
+            });
+            const textBody = await response.text();
+            let data;
+            try { data = JSON.parse(textBody); }
+            catch (_) { throw new Error("Gemini returned an unreadable response."); }
+            if (!response.ok) {
+                console.error("Gemini provider error:", response.status, data.error && data.error.message);
+                return res.status(502).json({
+                    error: "The Gemini analyst could not complete this request. Check the Gemini API key, model access and usage limits."
+                });
+            }
+            const answer = data.candidates && data.candidates[0] && data.candidates[0].content &&
+                Array.isArray(data.candidates[0].content.parts)
+                ? data.candidates[0].content.parts.map(part => String(part.text || "")).join("").trim() : "";
+            if (!answer) return res.status(502).json({ error: "The Gemini analyst returned an empty answer." });
+            return res.json({ answer, provider: "google-gemini", model, evidenceUsed: evidence });
+        }
+
+        if (process.env.OPENAI_API_KEY) {
+            const model = process.env.OPENAI_MODEL || "gpt-4o-mini";
+            const response = await fetch("https://api.openai.com/v1/chat/completions", {
+                method: "POST",
+                headers: {
+                    "Authorization": "Bearer " + process.env.OPENAI_API_KEY,
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify({
+                    model,
+                    temperature: 0.2,
+                    max_tokens: 650,
+                    messages: [
+                        { role: "system", content: systemInstruction },
+                        { role: "user", content: userContent }
+                    ]
+                }),
+                signal: AbortSignal.timeout(22000)
+            });
+            const textBody = await response.text();
+            let data;
+            try { data = JSON.parse(textBody); }
+            catch (_) { throw new Error("OpenAI returned an unreadable response."); }
+            if (!response.ok) {
+                console.error("OpenAI provider error:", response.status, data.error && data.error.message);
+                return res.status(502).json({ error: "The AI analyst could not complete this request. Please try again." });
+            }
+            const answer = data.choices && data.choices[0] && data.choices[0].message
+                ? String(data.choices[0].message.content || "").trim() : "";
+            if (!answer) return res.status(502).json({ error: "The AI analyst returned an empty answer." });
+            return res.json({ answer, provider: "openai", model, evidenceUsed: evidence });
+        }
+
         return res.status(503).json({
             code: "AI_NOT_CONFIGURED",
-            error: "Cloud AI is not configured yet. Add OPENAI_API_KEY to the server environment to enable the full AI analyst."
+            error: "Cloud AI is not configured. Add GEMINI_API_KEY to use Google Gemini, or OPENAI_API_KEY to use OpenAI."
         });
-    }
-    try {
-        const response = await fetch("https://api.openai.com/v1/chat/completions", {
-            method: "POST",
-            headers: {
-                "Authorization": "Bearer " + process.env.OPENAI_API_KEY,
-                "Content-Type": "application/json"
-            },
-            body: JSON.stringify({
-                model: process.env.OPENAI_MODEL || "gpt-4o-mini",
-                temperature: 0.2,
-                max_tokens: 650,
-                messages: [
-                    {
-                        role: "system",
-                        content: "You are Football Genie, a careful football-model analyst. Explain predictions using only the evidence provided. Separate observed data from model estimates. Do not invent injuries, line-ups, live match events, possession, shots, or external facts. Expected goals are estimates, not actual goals. If completed match history is supplied, compare predicted versus actual scores, identify recurring error patterns and suggest testable improvements, clearly noting small-sample limitations. You may recommend experiments but must never claim that you changed or trained the app's model. Explain uncertainty and avoid guarantees or betting certainty. If the evidence is insufficient, say what is missing. Keep the answer practical and readable on a phone."
-                    },
-                    {
-                        role: "user",
-                        content: "Question: " + prompt + "\nMatch evidence (percentages are model probabilities, not live facts):\n" +
-                            JSON.stringify({ home, away, ...evidence }) +
-                            "\nCompleted saved predictions with actual scores (historical evidence only; newest first):\n" +
-                            JSON.stringify(completedHistory)
-                    }
-                ]
-            }),
-            signal: AbortSignal.timeout(22000)
-        });
-        const textBody = await response.text();
-        let data;
-        try { data = JSON.parse(textBody); }
-        catch (_) { throw new Error("AI provider returned an unreadable response."); }
-        if (!response.ok) {
-            console.error("AI provider error:", response.status, data.error && data.error.message);
-            return res.status(502).json({ error: "The AI analyst could not complete this request. Please try again." });
-        }
-        const answer = data.choices && data.choices[0] && data.choices[0].message
-            ? String(data.choices[0].message.content || "").trim() : "";
-        if (!answer) return res.status(502).json({ error: "The AI analyst returned an empty answer." });
-        return res.json({ answer, provider: "openai", model: process.env.OPENAI_MODEL || "gpt-4o-mini", evidenceUsed: evidence });
     } catch (error) {
         console.error("AI analysis request failed:", error.message);
         return res.status(502).json({ error: "Unable to reach the AI analyst right now. Please try again." });
