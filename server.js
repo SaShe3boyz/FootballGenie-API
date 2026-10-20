@@ -90,154 +90,137 @@ res.status(502).json({
 }
 });
 
+// Short-lived cache keeps repeated fixture loads fast and reduces provider calls.
+const matchesCache = new Map();
+const MATCH_CACHE_TTL_MS = 3 * 60 * 1000;
+
 app.get("/api/matches", async (req, res) => {
-if (!API_TOKEN) {
-return res.status(500).json({
-error: "Football data API token is not configured."
-});
-}
-
-const { dateFrom, dateTo } = req.query;
-
-if (
-(dateFrom && !/^\d{4}-\d{2}-\d{2}$/.test(dateFrom)) ||
-(dateTo && !/^\d{4}-\d{2}-\d{2}$/.test(dateTo))
-) {
-return res.status(400).json({
-error: "Dates must use YYYY-MM-DD format."
-});
-}
-
-const defaultStart = new Date();
-defaultStart.setUTCDate(defaultStart.getUTCDate() - 3);
-
-const startDate = dateFrom ||
-    defaultStart.toISOString().slice(0, 10);
-
-const firstEndDate = new Date(startDate + "T00:00:00Z");
-firstEndDate.setUTCDate(firstEndDate.getUTCDate() + 10);
-
-const endDate = dateTo ||
-    firstEndDate.toISOString().slice(0, 10);
-
-// The provider limits each date-range request, so use two consecutive
-// windows by default. This gives the app a longer view of each competition
-// without exceeding the provider's per-request date-range limit.
-const windows = [];
-if (!dateFrom && !dateTo) {
-    const secondStart = new Date(firstEndDate);
-    secondStart.setUTCDate(secondStart.getUTCDate() + 1);
-    const secondEnd = new Date(secondStart);
-    secondEnd.setUTCDate(secondEnd.getUTCDate() + 10);
-
-    windows.push(
-        { from: startDate, to: endDate },
-        {
-            from: secondStart.toISOString().slice(0, 10),
-            to: secondEnd.toISOString().slice(0, 10)
-        }
-    );
-} else {
-    const effectiveEnd = dateTo || endDate;
-    windows.push({ from: startDate, to: effectiveEnd });
-}
-
-try {
-    const allMatches = new Map();
-    let combinedData = null;
-    let playedCount = 0;
-
-    for (const window of windows) {
-        const params = new URLSearchParams();
-        params.set("dateFrom", window.from);
-        params.set("dateTo", window.to);
-
-        const url =
-            "https://api.football-data.org/v4/matches?" +
-            params.toString();
-
-        const response = await fetch(url, {
-            headers: { "X-Auth-Token": API_TOKEN },
-            signal: AbortSignal.timeout(10000)
+    if (!API_TOKEN) {
+        return res.status(500).json({
+            error: "Football data API token is not configured."
         });
-
-        const responseText = await response.text();
-        let data;
-
-        try {
-            data = JSON.parse(responseText);
-        } catch (parseError) {
-            console.error(
-                "Football provider returned non-JSON:",
-                response.status,
-                responseText.slice(0, 300)
-            );
-
-            return res.status(502).json({
-                error: "Football data provider returned a non-JSON response.",
-                providerStatus: response.status
-            });
-        }
-
-        if (!response.ok) {
-            return res.status(response.status).json({
-                error: "Football data provider returned an error.",
-                details: data.message || "Request failed"
-            });
-        }
-
-        if (!combinedData) {
-            combinedData = data;
-        }
-
-        const matches = Array.isArray(data.matches) ? data.matches : [];
-        for (const match of matches) {
-            if (match && match.id != null) {
-                allMatches.set(match.id, match);
-            }
-        }
-
-        playedCount += Number(data.resultSet?.played || 0);
     }
 
-    const matches = Array.from(allMatches.values()).sort(
-        (a, b) => new Date(a.utcDate) - new Date(b.utcDate)
-    );
+    const { dateFrom, dateTo } = req.query;
+    if (
+        (dateFrom && !/^\\d{4}-\\d{2}-\\d{2}$/.test(dateFrom)) ||
+        (dateTo && !/^\\d{4}-\\d{2}-\\d{2}$/.test(dateTo))
+    ) {
+        return res.status(400).json({ error: "Dates must use YYYY-MM-DD format." });
+    }
 
-    const firstDate = matches.length
-        ? matches[0].utcDate.slice(0, 10)
-        : startDate;
-    const lastDate = matches.length
-        ? matches[matches.length - 1].utcDate.slice(0, 10)
-        : (windows[windows.length - 1].to);
+    const defaultStart = new Date();
+    defaultStart.setUTCDate(defaultStart.getUTCDate() - 3);
+    const startDate = dateFrom || defaultStart.toISOString().slice(0, 10);
+    const firstEndDate = new Date(startDate + "T00:00:00Z");
+    firstEndDate.setUTCDate(firstEndDate.getUTCDate() + 10);
+    const endDate = dateTo || firstEndDate.toISOString().slice(0, 10);
 
-    res.json({
-        ...combinedData,
-        filters: {
-            ...(combinedData.filters || {}),
-            dateFrom: startDate,
-            dateTo: windows[windows.length - 1].to
-        },
-        resultSet: {
-            ...(combinedData.resultSet || {}),
-            count: matches.length,
-            first: firstDate,
-            last: lastDate,
-            played: playedCount
-        },
-        matches
-    });
+    const windows = [];
+    if (!dateFrom && !dateTo) {
+        const secondStart = new Date(firstEndDate);
+        secondStart.setUTCDate(secondStart.getUTCDate() + 1);
+        const secondEnd = new Date(secondStart);
+        secondEnd.setUTCDate(secondEnd.getUTCDate() + 10);
+        windows.push(
+            { from: startDate, to: endDate },
+            { from: secondStart.toISOString().slice(0, 10), to: secondEnd.toISOString().slice(0, 10) }
+        );
+    } else {
+        windows.push({ from: startDate, to: dateTo || endDate });
+    }
 
-} catch (error) {
-    console.error("Football matches error:", error);
+    const cacheKey = windows.map(w => w.from + ":" + w.to).join("|");
+    const cached = matchesCache.get(cacheKey);
+    if (cached && Date.now() < cached.expiresAt) {
+        res.set("X-Football-Genie-Cache", "HIT");
+        return res.json(cached.data);
+    }
 
-    res.status(502).json({
-        error: "Unable to retrieve football matches.",
-        details: error.message || "Unknown server error."
-    });
-}
+    try {
+        // Fetch both date windows concurrently instead of waiting for one before starting the other.
+        const windowResults = await Promise.all(windows.map(async window => {
+            const params = new URLSearchParams({
+                dateFrom: window.from,
+                dateTo: window.to
+            });
+            const response = await fetch(
+                "https://api.football-data.org/v4/matches?" + params.toString(),
+                {
+                    headers: { "X-Auth-Token": API_TOKEN },
+                    signal: AbortSignal.timeout(10000)
+                }
+            );
+            const responseText = await response.text();
+            let data;
+            try {
+                data = JSON.parse(responseText);
+            } catch (parseError) {
+                throw new Error("Football provider returned non-JSON (HTTP " + response.status + ").");
+            }
+            if (!response.ok) {
+                const providerError = new Error(data.message || "Football data provider request failed.");
+                providerError.status = response.status;
+                throw providerError;
+            }
+            return data;
+        }));
+
+        const allMatches = new Map();
+        let combinedData = windowResults[0] || {};
+        let playedCount = 0;
+        for (const data of windowResults) {
+            for (const match of (Array.isArray(data.matches) ? data.matches : [])) {
+                if (match && match.id != null) allMatches.set(match.id, match);
+            }
+            playedCount += Number(data.resultSet && data.resultSet.played || 0);
+        }
+
+        const matches = Array.from(allMatches.values()).sort(
+            (a, b) => new Date(a.utcDate) - new Date(b.utcDate)
+        );
+        const lastWindow = windows[windows.length - 1];
+        const firstDate = matches.length ? matches[0].utcDate.slice(0, 10) : startDate;
+        const lastDate = matches.length ? matches[matches.length - 1].utcDate.slice(0, 10) : lastWindow.to;
+
+        const result = {
+            ...combinedData,
+            filters: {
+                ...(combinedData.filters || {}),
+                dateFrom: startDate,
+                dateTo: lastWindow.to
+            },
+            resultSet: {
+                ...(combinedData.resultSet || {}),
+                count: matches.length,
+                first: firstDate,
+                last: lastDate,
+                played: playedCount
+            },
+            matches
+        };
+
+        matchesCache.set(cacheKey, { data: result, expiresAt: Date.now() + MATCH_CACHE_TTL_MS });
+        // Keep the cache small and discard expired entries.
+        for (const [key, value] of matchesCache.entries()) {
+            if (Date.now() >= value.expiresAt || matchesCache.size > 20) matchesCache.delete(key);
+        }
+        res.set("X-Football-Genie-Cache", "MISS");
+        return res.json(result);
+    } catch (error) {
+        console.error("Football matches error:", error.message);
+        // If the provider is temporarily slow, use recently cached fixtures rather than leave the app waiting.
+        const stale = matchesCache.get(cacheKey);
+        if (stale && Date.now() - (stale.expiresAt - MATCH_CACHE_TTL_MS) < 24 * 60 * 60 * 1000) {
+            res.set("X-Football-Genie-Cache", "STALE");
+            return res.json(stale.data);
+        }
+        return res.status(error.status || 502).json({
+            error: "Unable to retrieve football matches.",
+            details: error.message || "Unknown server error."
+        });
+    }
 });
-
 
 // Return current competition home/away scoring baselines and team strength rates.
 // These season rates let the app adjust recent form for the level of opposition.
