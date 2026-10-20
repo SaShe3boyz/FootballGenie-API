@@ -496,6 +496,72 @@ app.get("/api/team-stats", async (req, res) => {
     }
 });
 
+
+// Evidence-grounded conversational analysis. The provider key stays on the server.
+app.post("/api/ai/analyze", async (req, res) => {
+    const prompt = String(req.body && req.body.question || "").trim();
+    const context = req.body && req.body.match && typeof req.body.match === "object"
+        ? req.body.match : {};
+    if (!prompt || prompt.length > 1200) {
+        return res.status(400).json({ error: "A question between 1 and 1200 characters is required." });
+    }
+    const home = String(context.home || "Home team").slice(0, 100);
+    const away = String(context.away || "Away team").slice(0, 100);
+    const numericFields = ["homeXg", "awayXg", "homeWin", "draw", "awayWin", "over25", "under25", "btts"];
+    const evidence = {};
+    for (const field of numericFields) {
+        const value = Number(context[field]);
+        evidence[field] = Number.isFinite(value) ? Math.max(0, Math.min(100, value)) : null;
+    }
+    if (!process.env.OPENAI_API_KEY) {
+        return res.status(503).json({
+            code: "AI_NOT_CONFIGURED",
+            error: "Cloud AI is not configured yet. Add OPENAI_API_KEY to the server environment to enable the full AI analyst."
+        });
+    }
+    try {
+        const response = await fetch("https://api.openai.com/v1/chat/completions", {
+            method: "POST",
+            headers: {
+                "Authorization": "Bearer " + process.env.OPENAI_API_KEY,
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+                model: process.env.OPENAI_MODEL || "gpt-4o-mini",
+                temperature: 0.2,
+                max_tokens: 650,
+                messages: [
+                    {
+                        role: "system",
+                        content: "You are Football Genie, a careful football-model analyst. Explain predictions using only the evidence provided. Separate observed data from model estimates. Do not invent injuries, line-ups, live match events, possession, shots, or external facts. Expected goals are estimates, not actual goals. Explain uncertainty and avoid guarantees or betting certainty. If the evidence is insufficient, say what is missing. Keep the answer practical and readable on a phone."
+                    },
+                    {
+                        role: "user",
+                        content: "Question: " + prompt + "\nMatch evidence (percentages are model probabilities, not live facts):\n" +
+                            JSON.stringify({ home, away, ...evidence })
+                    }
+                ]
+            }),
+            signal: AbortSignal.timeout(22000)
+        });
+        const textBody = await response.text();
+        let data;
+        try { data = JSON.parse(textBody); }
+        catch (_) { throw new Error("AI provider returned an unreadable response."); }
+        if (!response.ok) {
+            console.error("AI provider error:", response.status, data.error && data.error.message);
+            return res.status(502).json({ error: "The AI analyst could not complete this request. Please try again." });
+        }
+        const answer = data.choices && data.choices[0] && data.choices[0].message
+            ? String(data.choices[0].message.content || "").trim() : "";
+        if (!answer) return res.status(502).json({ error: "The AI analyst returned an empty answer." });
+        return res.json({ answer, provider: "openai", model: process.env.OPENAI_MODEL || "gpt-4o-mini", evidenceUsed: evidence });
+    } catch (error) {
+        console.error("AI analysis request failed:", error.message);
+        return res.status(502).json({ error: "Unable to reach the AI analyst right now. Please try again." });
+    }
+});
+
 app.listen(PORT, "0.0.0.0", () => {
 console.log("Football Genie API is running on port " + PORT);
 });
