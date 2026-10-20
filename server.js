@@ -560,9 +560,12 @@ app.post("/api/ai/analyze", async (req, res) => {
             try { data = JSON.parse(textBody); }
             catch (_) { throw new Error("Gemini returned an unreadable response."); }
             if (!response.ok) {
-                console.error("Gemini provider error:", response.status, data.error && data.error.message);
+                const providerMessage = String(data.error && data.error.message || "Unknown Gemini provider error").slice(0, 500);
+                console.error("Gemini provider error:", response.status, providerMessage);
                 return res.status(502).json({
-                    error: "The Gemini analyst could not complete this request. Check the Gemini API key, model access and usage limits."
+                    error: "Gemini request failed (HTTP " + response.status + "): " + providerMessage,
+                    providerStatus: response.status,
+                    model
                 });
             }
             const answer = data.candidates && data.candidates[0] && data.candidates[0].content &&
