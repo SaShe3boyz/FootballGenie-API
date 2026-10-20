@@ -542,7 +542,7 @@ app.post("/api/ai/analyze", async (req, res) => {
             const model = process.env.GEMINI_MODEL || "gemini-3.8-flash";
             const url = "https://generativelanguage.googleapis.com/v1beta/models/" +
                 encodeURIComponent(model) + ":generateContent";
-            const response = await fetch(url, {
+            const requestOptions = {
                 method: "POST",
                 headers: {
                     "x-goog-api-key": process.env.GEMINI_API_KEY,
@@ -554,7 +554,15 @@ app.post("/api/ai/analyze", async (req, res) => {
                     generationConfig: { temperature: 0.2, maxOutputTokens: 650 }
                 }),
                 signal: AbortSignal.timeout(22000)
-            });
+            };
+            // Gemini can temporarily return HTTP 503 during high demand.
+            // Retry only that temporary provider error, with short backoff.
+            let response;
+            for (let attempt = 0; attempt < 3; attempt++) {
+                response = await fetch(url, requestOptions);
+                if (response.status !== 503 || attempt === 2) break;
+                await new Promise(resolve => setTimeout(resolve, 700 * (attempt + 1)));
+            }
             const textBody = await response.text();
             let data;
             try { data = JSON.parse(textBody); }
