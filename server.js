@@ -542,26 +542,43 @@ app.post("/api/ai/analyze", async (req, res) => {
             const model = process.env.GEMINI_MODEL || "gemini-3.8-flash";
             const url = "https://generativelanguage.googleapis.com/v1beta/models/" +
                 encodeURIComponent(model) + ":generateContent";
-            const requestOptions = {
-                method: "POST",
-                headers: {
-                    "x-goog-api-key": process.env.GEMINI_API_KEY,
-                    "Content-Type": "application/json"
-                },
-                body: JSON.stringify({
-                    systemInstruction: { parts: [{ text: systemInstruction }] },
-                    contents: [{ role: "user", parts: [{ text: userContent }] }],
-                    generationConfig: { temperature: 0.2, maxOutputTokens: 650 }
-                }),
-                signal: AbortSignal.timeout(22000)
-            };
-            // Gemini can temporarily return HTTP 503 during high demand.
-            // Retry only that temporary provider error, with short backoff.
+            const requestBody = JSON.stringify({
+                systemInstruction: { parts: [{ text: systemInstruction }] },
+                contents: [{ role: "user", parts: [{ text: userContent }] }],
+                generationConfig: { temperature: 0.2, maxOutputTokens: 650 }
+            });
+            // Gemini may return 503 or briefly fail to connect during high demand.
+            // Give each attempt its own timeout signal and retry transient failures.
             let response;
+            let lastNetworkError = null;
             for (let attempt = 0; attempt < 3; attempt++) {
-                response = await fetch(url, requestOptions);
-                if (response.status !== 503 || attempt === 2) break;
-                await new Promise(resolve => setTimeout(resolve, 700 * (attempt + 1)));
+                try {
+                    response = await fetch(url, {
+                        method: "POST",
+                        headers: {
+                            "x-goog-api-key": process.env.GEMINI_API_KEY,
+                            "Content-Type": "application/json"
+                        },
+                        body: requestBody,
+                        signal: AbortSignal.timeout(30000)
+                    });
+                    if (response.status !== 503 || attempt === 2) break;
+                } catch (networkError) {
+                    lastNetworkError = networkError;
+                    if (attempt === 2) {
+                        console.error("Gemini connection failure:", networkError.name, networkError.message);
+                        return res.status(502).json({
+                            error: "Gemini connection failed: " + String(networkError.name || "Error") +
+                                (networkError.message ? " - " + String(networkError.message).slice(0, 180) : ""),
+                            provider: "google-gemini"
+                        });
+                    }
+                }
+                await new Promise(resolve => setTimeout(resolve, 900 * (attempt + 1)));
+            }
+            if (!response) {
+                console.error("Gemini connection failed after retries:", lastNetworkError && lastNetworkError.message);
+                return res.status(502).json({ error: "Gemini could not be reached after three attempts." });
             }
             const textBody = await response.text();
             let data;
@@ -621,8 +638,11 @@ app.post("/api/ai/analyze", async (req, res) => {
             error: "Cloud AI is not configured. Add GEMINI_API_KEY to use Google Gemini, or OPENAI_API_KEY to use OpenAI."
         });
     } catch (error) {
-        console.error("AI analysis request failed:", error.message);
-        return res.status(502).json({ error: "Unable to reach the AI analyst right now. Please try again." });
+        console.error("AI analysis request failed:", error.name, error.message);
+        return res.status(502).json({
+            error: "AI analysis failed: " + String(error.name || "Error") +
+                (error.message ? " - " + String(error.message).slice(0, 180) : "")
+        });
     }
 });
 
