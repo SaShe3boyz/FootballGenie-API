@@ -510,13 +510,13 @@ async function requestGroqAnswer(systemInstruction, userContent) {
         body: JSON.stringify({
             model,
             temperature: 0.2,
-            max_tokens: 1600,
+            max_tokens: 3000,
             messages: [
                 { role: "system", content: systemInstruction },
                 { role: "user", content: userContent }
             ]
         }),
-        signal: AbortSignal.timeout(22000)
+        signal: AbortSignal.timeout(45000)
     });
     const textBody = await response.text();
     let data;
@@ -617,7 +617,7 @@ app.post("/api/ai/analyze", async (req, res) => {
                 body: JSON.stringify({
                     model,
                     temperature: 0.2,
-                    max_tokens: 1600,
+                    max_tokens: 3000,
                     messages: [
                         { role: "system", content: systemInstruction },
                         { role: "user", content: userContent }
