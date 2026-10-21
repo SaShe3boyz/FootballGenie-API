@@ -1,8 +1,28 @@
 const express = require("express");
+const { Pool } = require("pg");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 const API_TOKEN = process.env.FOOTBALL_DATA_API_TOKEN;
+
+// Neon PostgreSQL connection. Credentials are supplied only through Render environment variables.
+const dbPool = process.env.DATABASE_URL
+    ? new Pool({
+        connectionString: process.env.DATABASE_URL,
+        ssl: { rejectUnauthorized: false },
+        max: 5,
+        idleTimeoutMillis: 30000,
+        connectionTimeoutMillis: 10000
+    })
+    : null;
+
+if (dbPool) {
+    dbPool.on("error", error => {
+        console.error("Unexpected idle database connection error:", error.message);
+    });
+} else {
+    console.warn("DATABASE_URL is not configured; database features are unavailable.");
+}
 
 app.use(express.json({ limit: "32kb" }));
 
@@ -51,6 +71,20 @@ app: "Football Genie API",
 status: "online",
 message: "Football data service is running"
 });
+});
+
+// Safe connectivity check; does not expose database credentials or query results.
+app.get("/api/health/database", async (req, res) => {
+    if (!dbPool) {
+        return res.status(503).json({ status: "unavailable", message: "Database is not configured." });
+    }
+    try {
+        await dbPool.query("SELECT 1");
+        return res.json({ status: "connected" });
+    } catch (error) {
+        console.error("Database health check failed:", error.message);
+        return res.status(503).json({ status: "unavailable", message: "Database connection failed." });
+    }
 });
 
 app.get("/api/competitions", async (req, res) => {
@@ -661,4 +695,9 @@ app.post("/api/ai/analyze", async (req, res) => {
 
 app.listen(PORT, "0.0.0.0", () => {
 console.log("Football Genie API is running on port " + PORT);
+    if (dbPool) {
+        dbPool.query("SELECT 1")
+            .then(() => console.log("Neon PostgreSQL connection verified."))
+            .catch(error => console.error("Neon PostgreSQL connection failed:", error.message));
+    }
 });
