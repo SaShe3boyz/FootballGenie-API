@@ -181,14 +181,16 @@ app.get("/api/health/database", async (req, res) => {
 
 // Each submitted prediction is its own record, even when many users predict the same fixture.
 // Older deployments used a unique fixture index; remove it and add non-unique lookup indexes.
-if (dbPool) {
-    dbPool.query("ALTER TABLE prediction_history ADD COLUMN IF NOT EXISTS client_id TEXT")
-        .catch(error => console.error("Prediction history client_id migration failed:", error.message));
-    dbPool.query("DROP INDEX IF EXISTS idx_prediction_history_external_unique")
+const predictionSchemaReady = dbPool
+    ? dbPool.query("ALTER TABLE prediction_history ADD COLUMN IF NOT EXISTS client_id TEXT")
+        .then(() => dbPool.query("DROP INDEX IF EXISTS idx_prediction_history_external_unique"))
         .then(() => dbPool.query("CREATE INDEX IF NOT EXISTS idx_prediction_history_external_idx ON prediction_history (match_external_id)"))
         .then(() => dbPool.query("CREATE INDEX IF NOT EXISTS idx_prediction_history_client_idx ON prediction_history (client_id)"))
-        .catch(error => console.error("Prediction history index setup failed:", error.message));
-}
+        .catch(error => {
+            console.error("Prediction history schema migration failed:", error.message);
+            throw error;
+        })
+    : Promise.resolve();
 
 // Save a prediction snapshot from the Android app. Actual results are only writable through owner-authenticated routes.
 function readOptionalNumber(value, min, max) {
@@ -232,6 +234,7 @@ app.post("/api/predictions", async (req, res) => {
     }
 
     try {
+        await predictionSchemaReady;
         const saved = await dbPool.query(
             `INSERT INTO prediction_history (
                 match_external_id, client_id, competition, home_team, away_team, kickoff_at,
