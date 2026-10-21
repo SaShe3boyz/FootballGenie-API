@@ -18,9 +18,23 @@ const dbPool = process.env.DATABASE_URL
     })
     : null;
 
+// Best-effort system event logging. Logging failures never break the football API.
+async function logSystemEvent(eventType, severity, message, details = {}) {
+    if (!dbPool) return;
+    try {
+        await dbPool.query(
+            "INSERT INTO system_events (event_type, severity, message, details) VALUES ($1, $2, $3, $4::jsonb)",
+            [String(eventType).slice(0, 80), String(severity).slice(0, 20), String(message).slice(0, 2000), JSON.stringify(details || {})]
+        );
+    } catch (error) {
+        console.error("System event logging failed:", error.message);
+    }
+}
+
 if (dbPool) {
     dbPool.on("error", error => {
         console.error("Unexpected idle database connection error:", error.message);
+        void logSystemEvent("database_connection_error", "error", "Unexpected idle database connection error.", { error: error.message });
     });
 } else {
     console.warn("DATABASE_URL is not configured; database features are unavailable.");
@@ -776,12 +790,14 @@ app.post("/api/ai/analyze", async (req, res) => {
         "\nCompleted saved predictions with actual scores (historical evidence only; newest first):\n" +
         JSON.stringify(completedHistory);
 
+    void logSystemEvent("ai_analysis_requested", "info", "AI analysis request received.", { questionLength: prompt.length });
     try {
         // Groq is the primary AI provider. OpenAI is an optional independent fallback.
         let groqFailureMessage = "";
         if (process.env.GROQ_API_KEY) {
             try {
                 const result = await requestGroqAnswer(systemInstruction, userContent);
+                void logSystemEvent("ai_analysis_succeeded", "success", "AI analysis completed successfully.", { provider: "groq", model: result.model });
                 return res.json({
                     answer: result.answer,
                     provider: "groq",
@@ -840,6 +856,7 @@ app.post("/api/ai/analyze", async (req, res) => {
         });
     } catch (error) {
         console.error("AI analysis request failed:", error.name, error.message);
+        void logSystemEvent("ai_analysis_failed", "error", "AI analysis request failed.", { errorName: error.name, error: String(error.message || "").slice(0, 300) });
         return res.status(502).json({
             error: "AI analysis failed: " + String(error.name || "Error") +
                 (error.message ? " - " + String(error.message).slice(0, 180) : "")
@@ -849,9 +866,16 @@ app.post("/api/ai/analyze", async (req, res) => {
 
 app.listen(PORT, "0.0.0.0", () => {
 console.log("Football Genie API is running on port " + PORT);
+    void logSystemEvent("api_started", "success", "Football Genie API started successfully.", { port: PORT });
     if (dbPool) {
         dbPool.query("SELECT 1")
-            .then(() => console.log("Neon PostgreSQL connection verified."))
-            .catch(error => console.error("Neon PostgreSQL connection failed:", error.message));
+            .then(() => {
+                console.log("Neon PostgreSQL connection verified.");
+                void logSystemEvent("database_connected", "success", "Neon PostgreSQL connection verified.");
+            })
+            .catch(error => {
+                console.error("Neon PostgreSQL connection failed:", error.message);
+                void logSystemEvent("database_connection_failed", "error", "Neon PostgreSQL connection failed.", { error: error.message });
+            });
     }
 });
