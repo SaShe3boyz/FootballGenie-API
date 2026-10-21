@@ -1,9 +1,11 @@
 const express = require("express");
+const crypto = require("crypto");
 const { Pool } = require("pg");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 const API_TOKEN = process.env.FOOTBALL_DATA_API_TOKEN;
+const OWNER_DASHBOARD_TOKEN = process.env.OWNER_DASHBOARD_TOKEN;
 
 // Neon PostgreSQL connection. Credentials are supplied only through Render environment variables.
 const dbPool = process.env.DATABASE_URL
@@ -24,7 +26,31 @@ if (dbPool) {
     console.warn("DATABASE_URL is not configured; database features are unavailable.");
 }
 
+
 app.use(express.json({ limit: "32kb" }));
+
+// Owner endpoints require a secret bearer token stored only in Render environment variables.
+function requireOwner(req, res, next) {
+    if (!OWNER_DASHBOARD_TOKEN || OWNER_DASHBOARD_TOKEN.length < 32) {
+        return res.status(503).json({
+            error: "Owner access is not configured. Set a strong OWNER_DASHBOARD_TOKEN in Render."
+        });
+    }
+
+    const authorization = req.get("authorization") || "";
+    const match = authorization.match(/^Bearer\s+(.+)$/i);
+    if (!match) {
+        return res.status(401).json({ error: "Owner authentication required." });
+    }
+
+    const supplied = Buffer.from(match[1]);
+    const expected = Buffer.from(OWNER_DASHBOARD_TOKEN);
+    if (supplied.length !== expected.length || !crypto.timingSafeEqual(supplied, expected)) {
+        return res.status(401).json({ error: "Invalid owner credentials." });
+    }
+
+    next();
+}
 
 // Basic in-memory rate limiter.
 // Limits each IP address to 60 requests per 15 minutes.
@@ -84,6 +110,87 @@ app.get("/api/health/database", async (req, res) => {
     } catch (error) {
         console.error("Database health check failed:", error.message);
         return res.status(503).json({ status: "unavailable", message: "Database connection failed." });
+    }
+});
+
+
+// Private owner dashboard summary. No owner data is returned without bearer-token authentication.
+app.get("/api/owner/dashboard", requireOwner, async (req, res) => {
+    if (!dbPool) {
+        return res.status(503).json({ error: "Database is not configured." });
+    }
+    try {
+        const result = await dbPool.query(`
+            SELECT
+                (SELECT COUNT(*)::int FROM system_events) AS total_events,
+                (SELECT COUNT(*)::int FROM validation_runs) AS total_validation_runs,
+                (SELECT COUNT(*)::int FROM owner_notifications WHERE is_read = FALSE) AS unread_notifications
+        `);
+        return res.json({
+            app: "Football Genie",
+            ownerAccess: "authenticated",
+            api: "online",
+            database: "connected",
+            metrics: result.rows[0],
+            checkedAt: new Date().toISOString()
+        });
+    } catch (error) {
+        console.error("Owner dashboard summary failed:", error.message);
+        return res.status(503).json({ error: "Unable to load owner dashboard data." });
+    }
+});
+
+// Private owner notification list.
+app.get("/api/owner/notifications", requireOwner, async (req, res) => {
+    if (!dbPool) return res.status(503).json({ error: "Database is not configured." });
+    try {
+        const result = await dbPool.query(
+            "SELECT id, title, message, notification_type, is_read, created_at FROM owner_notifications ORDER BY created_at DESC LIMIT 50"
+        );
+        return res.json({ notifications: result.rows });
+    } catch (error) {
+        console.error("Owner notifications query failed:", error.message);
+        return res.status(503).json({ error: "Unable to load owner notifications." });
+    }
+});
+
+// Private owner system-event history.
+app.get("/api/owner/events", requireOwner, async (req, res) => {
+    if (!dbPool) return res.status(503).json({ error: "Database is not configured." });
+    try {
+        const result = await dbPool.query(
+            "SELECT id, event_type, severity, message, details, created_at FROM system_events ORDER BY created_at DESC LIMIT 50"
+        );
+        return res.json({ events: result.rows });
+    } catch (error) {
+        console.error("Owner event history query failed:", error.message);
+        return res.status(503).json({ error: "Unable to load owner event history." });
+    }
+});
+
+// Owner can create a notification after authenticating.
+app.post("/api/owner/notifications", requireOwner, async (req, res) => {
+    if (!dbPool) return res.status(503).json({ error: "Database is not configured." });
+    const title = typeof req.body.title === "string" ? req.body.title.trim() : "";
+    const message = typeof req.body.message === "string" ? req.body.message.trim() : "";
+    const notificationType = typeof req.body.notification_type === "string"
+        ? req.body.notification_type.trim()
+        : "info";
+    if (!title || title.length > 160 || !message || message.length > 4000) {
+        return res.status(400).json({ error: "Title (1–160 characters) and message (1–4000 characters) are required." });
+    }
+    if (!["info", "success", "warning", "error"].includes(notificationType)) {
+        return res.status(400).json({ error: "notification_type must be info, success, warning, or error." });
+    }
+    try {
+        const result = await dbPool.query(
+            "INSERT INTO owner_notifications (title, message, notification_type) VALUES ($1, $2, $3) RETURNING id, title, message, notification_type, is_read, created_at",
+            [title, message, notificationType]
+        );
+        return res.status(201).json({ notification: result.rows[0] });
+    } catch (error) {
+        console.error("Owner notification creation failed:", error.message);
+        return res.status(503).json({ error: "Unable to save owner notification." });
     }
 });
 
