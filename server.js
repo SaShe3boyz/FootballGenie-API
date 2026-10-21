@@ -4,7 +4,7 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const API_TOKEN = process.env.FOOTBALL_DATA_API_TOKEN;
 
-app.use(express.json({ limit: "10kb" }));
+app.use(express.json({ limit: "32kb" }));
 
 // Basic in-memory rate limiter.
 // Limits each IP address to 60 requests per 15 minutes.
@@ -510,7 +510,7 @@ async function requestGroqAnswer(systemInstruction, userContent) {
         body: JSON.stringify({
             model,
             temperature: 0.2,
-            max_tokens: 650,
+            max_tokens: 1600,
             messages: [
                 { role: "system", content: systemInstruction },
                 { role: "user", content: userContent }
@@ -589,7 +589,8 @@ app.post("/api/ai/analyze", async (req, res) => {
         JSON.stringify(completedHistory);
 
     try {
-        // Groq is the sole primary AI provider. OpenAI is an optional independent fallback.
+        // Groq is the primary AI provider. OpenAI is an optional independent fallback.
+        let groqFailureMessage = "";
         if (process.env.GROQ_API_KEY) {
             try {
                 const result = await requestGroqAnswer(systemInstruction, userContent);
@@ -600,7 +601,8 @@ app.post("/api/ai/analyze", async (req, res) => {
                     evidenceUsed: evidence
                 });
             } catch (groqError) {
-                console.error("Groq primary provider failed; trying OpenAI fallback:", groqError.message);
+                groqFailureMessage = String(groqError && groqError.message || "Unknown Groq error");
+                console.error("Groq primary provider failed; trying OpenAI fallback:", groqFailureMessage);
             }
         }
 
@@ -615,7 +617,7 @@ app.post("/api/ai/analyze", async (req, res) => {
                 body: JSON.stringify({
                     model,
                     temperature: 0.2,
-                    max_tokens: 650,
+                    max_tokens: 1600,
                     messages: [
                         { role: "system", content: systemInstruction },
                         { role: "user", content: userContent }
@@ -635,6 +637,13 @@ app.post("/api/ai/analyze", async (req, res) => {
                 ? String(data.choices[0].message.content || "").trim() : "";
             if (!answer) return res.status(502).json({ error: "The AI analyst returned an empty answer." });
             return res.json({ answer, provider: "openai", model, evidenceUsed: evidence });
+        }
+
+        if (process.env.GROQ_API_KEY && groqFailureMessage) {
+            return res.status(502).json({
+                code: "AI_PROVIDER_FAILED",
+                error: "Groq could not complete this analysis: " + groqFailureMessage.slice(0, 180) + ". Please try again."
+            });
         }
 
         return res.status(503).json({
