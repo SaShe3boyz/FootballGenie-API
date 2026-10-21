@@ -175,6 +175,11 @@ app.get("/api/health/database", async (req, res) => {
 });
 
 
+// Keep one current prediction per known external fixture; local/manual predictions may have no fixture ID.
+dbPool && dbPool.query(
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_prediction_history_external_unique ON prediction_history (match_external_id) WHERE match_external_id IS NOT NULL"
+).catch(error => console.error("Prediction history index setup failed:", error.message));
+
 // Save a prediction snapshot from the Android app. Actual results are only writable through owner-authenticated routes.
 function readOptionalNumber(value, min, max) {
     if (value === undefined || value === null || value === "") return null;
@@ -223,6 +228,23 @@ app.post("/api/predictions", async (req, res) => {
                 over_25_probability, under_25_probability, btts_probability,
                 source, notes
             ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'android_app',$14)
+            ON CONFLICT (match_external_id) WHERE match_external_id IS NOT NULL
+            DO UPDATE SET
+                competition = EXCLUDED.competition,
+                home_team = EXCLUDED.home_team,
+                away_team = EXCLUDED.away_team,
+                kickoff_at = EXCLUDED.kickoff_at,
+                predicted_home_goals = EXCLUDED.predicted_home_goals,
+                predicted_away_goals = EXCLUDED.predicted_away_goals,
+                home_win_probability = EXCLUDED.home_win_probability,
+                draw_probability = EXCLUDED.draw_probability,
+                away_win_probability = EXCLUDED.away_win_probability,
+                over_25_probability = EXCLUDED.over_25_probability,
+                under_25_probability = EXCLUDED.under_25_probability,
+                btts_probability = EXCLUDED.btts_probability,
+                notes = EXCLUDED.notes,
+                created_at = NOW()
+            WHERE prediction_history.prediction_status <> 'evaluated'
             RETURNING id, prediction_status, created_at`,
             [
                 matchExternalId, competition, homeTeam, awayTeam, kickoffAt,
