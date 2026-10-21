@@ -179,10 +179,16 @@ app.get("/api/health/database", async (req, res) => {
 });
 
 
-// Keep one current prediction per known external fixture; local/manual predictions may have no fixture ID.
-dbPool && dbPool.query(
-    "CREATE UNIQUE INDEX IF NOT EXISTS idx_prediction_history_external_unique ON prediction_history (match_external_id) WHERE match_external_id IS NOT NULL"
-).catch(error => console.error("Prediction history index setup failed:", error.message));
+// Each submitted prediction is its own record, even when many users predict the same fixture.
+// Older deployments used a unique fixture index; remove it and add non-unique lookup indexes.
+if (dbPool) {
+    dbPool.query("ALTER TABLE prediction_history ADD COLUMN IF NOT EXISTS client_id TEXT")
+        .catch(error => console.error("Prediction history client_id migration failed:", error.message));
+    dbPool.query("DROP INDEX IF EXISTS idx_prediction_history_external_unique")
+        .then(() => dbPool.query("CREATE INDEX IF NOT EXISTS idx_prediction_history_external_idx ON prediction_history (match_external_id)"))
+        .then(() => dbPool.query("CREATE INDEX IF NOT EXISTS idx_prediction_history_client_idx ON prediction_history (client_id)"))
+        .catch(error => console.error("Prediction history index setup failed:", error.message));
+}
 
 // Save a prediction snapshot from the Android app. Actual results are only writable through owner-authenticated routes.
 function readOptionalNumber(value, min, max) {
@@ -199,6 +205,8 @@ app.post("/api/predictions", async (req, res) => {
     const awayTeam = String(body.awayTeam || body.away_team || body.away || "").trim().slice(0, 100);
     const competition = String(body.competition || "Unknown").trim().slice(0, 120) || "Unknown";
     const matchExternalId = body.matchExternalId == null ? null : String(body.matchExternalId).slice(0, 120);
+    const clientIdRaw = body.clientId ?? body.client_id ?? null;
+    const clientId = clientIdRaw == null ? null : String(clientIdRaw).trim().slice(0, 120) || null;
     const kickoffRaw = body.kickoffAt || body.kickoff_at || null;
     const kickoffAt = kickoffRaw ? new Date(kickoffRaw) : null;
 
@@ -226,32 +234,15 @@ app.post("/api/predictions", async (req, res) => {
     try {
         const saved = await dbPool.query(
             `INSERT INTO prediction_history (
-                match_external_id, competition, home_team, away_team, kickoff_at,
+                match_external_id, client_id, competition, home_team, away_team, kickoff_at,
                 predicted_home_goals, predicted_away_goals,
                 home_win_probability, draw_probability, away_win_probability,
                 over_25_probability, under_25_probability, btts_probability,
                 source, notes
-            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'android_app',$14)
-            ON CONFLICT (match_external_id) WHERE match_external_id IS NOT NULL
-            DO UPDATE SET
-                competition = EXCLUDED.competition,
-                home_team = EXCLUDED.home_team,
-                away_team = EXCLUDED.away_team,
-                kickoff_at = EXCLUDED.kickoff_at,
-                predicted_home_goals = EXCLUDED.predicted_home_goals,
-                predicted_away_goals = EXCLUDED.predicted_away_goals,
-                home_win_probability = EXCLUDED.home_win_probability,
-                draw_probability = EXCLUDED.draw_probability,
-                away_win_probability = EXCLUDED.away_win_probability,
-                over_25_probability = EXCLUDED.over_25_probability,
-                under_25_probability = EXCLUDED.under_25_probability,
-                btts_probability = EXCLUDED.btts_probability,
-                notes = EXCLUDED.notes,
-                created_at = NOW()
-            WHERE prediction_history.prediction_status <> 'evaluated'
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'android_app',$15)
             RETURNING id, prediction_status, created_at`,
             [
-                matchExternalId, competition, homeTeam, awayTeam, kickoffAt,
+                matchExternalId, clientId, competition, homeTeam, awayTeam, kickoffAt,
                 values.predictedHomeGoals, values.predictedAwayGoals,
                 values.homeWinProbability, values.drawProbability, values.awayWinProbability,
                 values.over25Probability, values.under25Probability, values.bttsProbability,
@@ -260,7 +251,7 @@ app.post("/api/predictions", async (req, res) => {
         );
         const prediction = saved.rows[0];
         void logSystemEvent("prediction_saved", "success", "A prediction was saved to prediction history.", {
-            predictionId: prediction.id, homeTeam, awayTeam, competition
+            predictionId: prediction.id, clientId, homeTeam, awayTeam, competition
         });
         return res.status(201).json({ status: "saved", prediction });
     } catch (error) {
@@ -280,7 +271,7 @@ app.get("/api/owner/predictions", requireOwner, async (req, res) => {
                     home_win_probability, draw_probability, away_win_probability,
                     over_25_probability, under_25_probability, btts_probability,
                     actual_home_goals, actual_away_goals, prediction_status,
-                    source, notes, created_at, evaluated_at
+                    source, notes, client_id, created_at, evaluated_at
              FROM prediction_history
              ORDER BY created_at DESC
              LIMIT 100`
