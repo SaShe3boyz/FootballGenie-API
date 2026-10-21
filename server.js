@@ -175,6 +175,132 @@ app.get("/api/health/database", async (req, res) => {
 });
 
 
+// Save a prediction snapshot from the Android app. Actual results are only writable through owner-authenticated routes.
+function readOptionalNumber(value, min, max) {
+    if (value === undefined || value === null || value === "") return null;
+    const number = Number(value);
+    return Number.isFinite(number) && number >= min && number <= max ? number : NaN;
+}
+
+app.post("/api/predictions", async (req, res) => {
+    if (!dbPool) return res.status(503).json({ error: "Database is not configured." });
+
+    const body = req.body || {};
+    const homeTeam = String(body.homeTeam || body.home_team || body.home || "").trim().slice(0, 100);
+    const awayTeam = String(body.awayTeam || body.away_team || body.away || "").trim().slice(0, 100);
+    const competition = String(body.competition || "Unknown").trim().slice(0, 120) || "Unknown";
+    const matchExternalId = body.matchExternalId == null ? null : String(body.matchExternalId).slice(0, 120);
+    const kickoffRaw = body.kickoffAt || body.kickoff_at || null;
+    const kickoffAt = kickoffRaw ? new Date(kickoffRaw) : null;
+
+    if (!homeTeam || !awayTeam) {
+        return res.status(400).json({ error: "homeTeam and awayTeam are required." });
+    }
+    if (kickoffRaw && Number.isNaN(kickoffAt.getTime())) {
+        return res.status(400).json({ error: "kickoffAt must be a valid date/time." });
+    }
+
+    const values = {
+        predictedHomeGoals: readOptionalNumber(body.predictedHomeGoals ?? body.predicted_home_goals, 0, 20),
+        predictedAwayGoals: readOptionalNumber(body.predictedAwayGoals ?? body.predicted_away_goals, 0, 20),
+        homeWinProbability: readOptionalNumber(body.homeWinProbability ?? body.home_win_probability, 0, 100),
+        drawProbability: readOptionalNumber(body.drawProbability ?? body.draw_probability, 0, 100),
+        awayWinProbability: readOptionalNumber(body.awayWinProbability ?? body.away_win_probability, 0, 100),
+        over25Probability: readOptionalNumber(body.over25Probability ?? body.over_25_probability, 0, 100),
+        under25Probability: readOptionalNumber(body.under25Probability ?? body.under_25_probability, 0, 100),
+        bttsProbability: readOptionalNumber(body.bttsProbability ?? body.btts_probability, 0, 100)
+    };
+    if (Object.values(values).some(value => Number.isNaN(value))) {
+        return res.status(400).json({ error: "Goal estimates must be between 0 and 20; probabilities must be between 0 and 100." });
+    }
+
+    try {
+        const saved = await dbPool.query(
+            `INSERT INTO prediction_history (
+                match_external_id, competition, home_team, away_team, kickoff_at,
+                predicted_home_goals, predicted_away_goals,
+                home_win_probability, draw_probability, away_win_probability,
+                over_25_probability, under_25_probability, btts_probability,
+                source, notes
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'android_app',$14)
+            RETURNING id, prediction_status, created_at`,
+            [
+                matchExternalId, competition, homeTeam, awayTeam, kickoffAt,
+                values.predictedHomeGoals, values.predictedAwayGoals,
+                values.homeWinProbability, values.drawProbability, values.awayWinProbability,
+                values.over25Probability, values.under25Probability, values.bttsProbability,
+                String(body.notes || "").slice(0, 1000) || null
+            ]
+        );
+        const prediction = saved.rows[0];
+        void logSystemEvent("prediction_saved", "success", "A prediction was saved to prediction history.", {
+            predictionId: prediction.id, homeTeam, awayTeam, competition
+        });
+        return res.status(201).json({ status: "saved", prediction });
+    } catch (error) {
+        console.error("Saving prediction failed:", error.message);
+        void logSystemEvent("prediction_save_failed", "error", "A prediction could not be saved.", { error: error.message });
+        return res.status(503).json({ error: "Unable to save prediction history right now." });
+    }
+});
+
+// Private owner-only prediction history.
+app.get("/api/owner/predictions", requireOwner, async (req, res) => {
+    if (!dbPool) return res.status(503).json({ error: "Database is not configured." });
+    try {
+        const result = await dbPool.query(
+            `SELECT id, match_external_id, competition, home_team, away_team, kickoff_at,
+                    predicted_home_goals, predicted_away_goals,
+                    home_win_probability, draw_probability, away_win_probability,
+                    over_25_probability, under_25_probability, btts_probability,
+                    actual_home_goals, actual_away_goals, prediction_status,
+                    source, notes, created_at, evaluated_at
+             FROM prediction_history
+             ORDER BY created_at DESC
+             LIMIT 100`
+        );
+        return res.json({ predictions: result.rows });
+    } catch (error) {
+        console.error("Owner prediction history failed:", error.message);
+        return res.status(503).json({ error: "Unable to load prediction history." });
+    }
+});
+
+// Actual scores can only be entered by the authenticated owner until verified result syncing is added.
+app.post("/api/owner/predictions/:id/result", requireOwner, async (req, res) => {
+    if (!dbPool) return res.status(503).json({ error: "Database is not configured." });
+    const id = Number(req.params.id);
+    const body = req.body || {};
+    const homeGoals = body.actualHomeGoals;
+    const awayGoals = body.actualAwayGoals;
+    if (!Number.isSafeInteger(id) || id <= 0) {
+        return res.status(400).json({ error: "A valid prediction ID is required." });
+    }
+    if (!Number.isInteger(homeGoals) || !Number.isInteger(awayGoals) ||
+        homeGoals < 0 || awayGoals < 0 || homeGoals > 20 || awayGoals > 20) {
+        return res.status(400).json({ error: "Actual scores must be whole numbers between 0 and 20." });
+    }
+    try {
+        const updated = await dbPool.query(
+            `UPDATE prediction_history
+             SET actual_home_goals = $1, actual_away_goals = $2,
+                 prediction_status = 'evaluated', evaluated_at = NOW()
+             WHERE id = $3 AND prediction_status <> 'cancelled'
+             RETURNING id, home_team, away_team, actual_home_goals, actual_away_goals,
+                       prediction_status, evaluated_at`,
+            [homeGoals, awayGoals, id]
+        );
+        if (!updated.rowCount) return res.status(404).json({ error: "Prediction not found or cancelled." });
+        void logSystemEvent("prediction_result_recorded", "success", "An actual match result was recorded by the owner.", {
+            predictionId: id, actualHomeGoals: homeGoals, actualAwayGoals: awayGoals
+        });
+        return res.json({ status: "evaluated", prediction: updated.rows[0] });
+    } catch (error) {
+        console.error("Recording prediction result failed:", error.message);
+        return res.status(503).json({ error: "Unable to record the actual result." });
+    }
+});
+
 // Private owner dashboard summary. No owner data is returned without bearer-token authentication.
 app.get("/api/owner/dashboard", requireOwner, async (req, res) => {
     if (!dbPool) {
@@ -185,7 +311,10 @@ app.get("/api/owner/dashboard", requireOwner, async (req, res) => {
             SELECT
                 (SELECT COUNT(*)::int FROM system_events) AS total_events,
                 (SELECT COUNT(*)::int FROM validation_runs) AS total_validation_runs,
-                (SELECT COUNT(*)::int FROM owner_notifications WHERE is_read = FALSE) AS unread_notifications
+                (SELECT COUNT(*)::int FROM owner_notifications WHERE is_read = FALSE) AS unread_notifications,
+                (SELECT COUNT(*)::int FROM prediction_history) AS total_predictions,
+                (SELECT COUNT(*)::int FROM prediction_history WHERE prediction_status = 'pending') AS pending_predictions,
+                (SELECT COUNT(*)::int FROM prediction_history WHERE prediction_status = 'evaluated') AS evaluated_predictions
         `);
         return res.json({
             app: "Football Genie",
