@@ -179,13 +179,14 @@ app.get("/api/health/database", async (req, res) => {
 });
 
 
-// Each submitted prediction is its own record, even when many users predict the same fixture.
-// Older deployments used a unique fixture index; remove it and add non-unique lookup indexes.
+// Allow different users to predict the same fixture, but only once per user/install.
+// The Android app supplies a stable anonymous client ID until account sign-in is introduced.
 const predictionSchemaReady = dbPool
     ? dbPool.query("ALTER TABLE prediction_history ADD COLUMN IF NOT EXISTS client_id TEXT")
         .then(() => dbPool.query("DROP INDEX IF EXISTS idx_prediction_history_external_unique"))
         .then(() => dbPool.query("CREATE INDEX IF NOT EXISTS idx_prediction_history_external_idx ON prediction_history (match_external_id)"))
         .then(() => dbPool.query("CREATE INDEX IF NOT EXISTS idx_prediction_history_client_idx ON prediction_history (client_id)"))
+        .then(() => dbPool.query("CREATE UNIQUE INDEX IF NOT EXISTS idx_prediction_history_client_fixture_unique ON prediction_history (client_id, match_external_id) WHERE client_id IS NOT NULL AND match_external_id IS NOT NULL"))
         .catch(error => {
             console.error("Prediction history schema migration failed:", error.message);
             throw error;
@@ -209,6 +210,9 @@ app.post("/api/predictions", async (req, res) => {
     const matchExternalId = body.matchExternalId == null ? null : String(body.matchExternalId).slice(0, 120);
     const clientIdRaw = body.clientId ?? body.client_id ?? null;
     const clientId = clientIdRaw == null ? null : String(clientIdRaw).trim().slice(0, 120) || null;
+    if (matchExternalId && !clientId) {
+        return res.status(400).json({ error: "clientId is required for fixture predictions so duplicate submissions can be prevented." });
+    }
     const kickoffRaw = body.kickoffAt || body.kickoff_at || null;
     const kickoffAt = kickoffRaw ? new Date(kickoffRaw) : null;
 
@@ -258,6 +262,9 @@ app.post("/api/predictions", async (req, res) => {
         });
         return res.status(201).json({ status: "saved", prediction });
     } catch (error) {
+        if (error && error.code === "23505") {
+            return res.status(409).json({ error: "You have already saved a prediction for this fixture." });
+        }
         console.error("Saving prediction failed:", error.message);
         void logSystemEvent("prediction_save_failed", "error", "A prediction could not be saved.", { error: error.message });
         return res.status(503).json({ error: "Unable to save prediction history right now." });
