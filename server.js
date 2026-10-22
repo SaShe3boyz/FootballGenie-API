@@ -875,7 +875,7 @@ app.get("/api/match-intelligence/resolve-fixture", async (req, res) => {
     const homeTeam = String(req.query.homeTeam || "").trim().slice(0, 100);
     const awayTeam = String(req.query.awayTeam || "").trim().slice(0, 100);
     const date = String(req.query.date || "").trim();
-    if (!homeTeam || !awayTeam || !/^\\d{4}-\\d{2}-\\d{2}$/.test(date) || Number.isNaN(Date.parse(date + "T00:00:00Z"))) {
+    if (!homeTeam || !awayTeam || !/^\d{4}-\d{2}-\d{2}$/.test(date) || Number.isNaN(Date.parse(date + "T00:00:00Z"))) {
         return res.status(400).json({ error: "Provide homeTeam, awayTeam, and date in YYYY-MM-DD format." });
     }
     const cacheKey = [normalizeTeamName(homeTeam), normalizeTeamName(awayTeam), date].join("|");
