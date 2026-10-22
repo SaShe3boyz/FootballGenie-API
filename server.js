@@ -866,14 +866,16 @@ function normalizeTeamName(value) {
         .replace(/[^a-z0-9]+/g, " ").trim().replace(/\s+/g, " ");
 }
 app.get("/api/match-intelligence/resolve-fixture", async (req, res) => {
-    const providerKey = process.env.API_FOOTBALL_API_KEY || process.env.APIFOOTBALL_API_KEY;
+    // Fixture lookup now uses the existing Football-Data.org provider already configured for Football Genie.
+    // Its match IDs are NOT API-Football fixture IDs and must not be passed to the API-Football injuries route.
+    const providerKey = process.env.FOOTBALL_DATA_API_TOKEN;
     if (!providerKey) {
-        return res.status(503).json({ status: "not_configured", error: "Injury intelligence provider is not configured." });
+        return res.status(503).json({ status: "not_configured", error: "Football-Data.org is not configured.", requiredEnvironmentVariable: "FOOTBALL_DATA_API_TOKEN" });
     }
     const homeTeam = String(req.query.homeTeam || "").trim().slice(0, 100);
     const awayTeam = String(req.query.awayTeam || "").trim().slice(0, 100);
     const date = String(req.query.date || "").trim();
-    if (!homeTeam || !awayTeam || !/^\d{4}-\d{2}-\d{2}$/.test(date) || Number.isNaN(Date.parse(date + "T00:00:00Z"))) {
+    if (!homeTeam || !awayTeam || !/^\\d{4}-\\d{2}-\\d{2}$/.test(date) || Number.isNaN(Date.parse(date + "T00:00:00Z"))) {
         return res.status(400).json({ error: "Provide homeTeam, awayTeam, and date in YYYY-MM-DD format." });
     }
     const cacheKey = [normalizeTeamName(homeTeam), normalizeTeamName(awayTeam), date].join("|");
@@ -883,84 +885,77 @@ app.get("/api/match-intelligence/resolve-fixture", async (req, res) => {
         return res.json(cached.data);
     }
     try {
-        const providerResponse = await fetch("https://v3.football.api-sports.io/fixtures?date=" + encodeURIComponent(date), {
-            headers: { "x-apisports-key": providerKey },
+        const params = new URLSearchParams({ dateFrom: date, dateTo: date });
+        const providerResponse = await fetch("https://api.football-data.org/v4/matches?" + params.toString(), {
+            headers: { "X-Auth-Token": providerKey },
             signal: AbortSignal.timeout(12000)
         });
         const textBody = await providerResponse.text();
         let data;
         try { data = JSON.parse(textBody); }
-        catch (_) { return res.status(502).json({ status: "provider_error", error: "Fixture provider returned an unreadable response." }); }
-        const providerErrors = data && data.errors;
-        const hasProviderErrors = providerErrors && (
-            (Array.isArray(providerErrors) && providerErrors.length > 0) ||
-            (typeof providerErrors === "object" && !Array.isArray(providerErrors) && Object.keys(providerErrors).length > 0) ||
-            (typeof providerErrors === "string" && providerErrors.trim().length > 0)
-        );
-        if (!providerResponse.ok || hasProviderErrors) {
-            const safeProviderErrors = typeof providerErrors === "string"
-                ? providerErrors.slice(0, 500)
-                : JSON.stringify(providerErrors || {}).slice(0, 500);
-            console.warn("API-Football fixture resolution failed:", safeProviderErrors);
+        catch (_) { return res.status(502).json({ status: "provider_error", error: "Football-Data.org returned an unreadable response." }); }
+        if (!providerResponse.ok || (data && data.errorCode)) {
+            console.warn("Football-Data.org fixture resolution failed:", JSON.stringify({ status: providerResponse.status, errorCode: data && data.errorCode, message: data && data.message }).slice(0, 500));
             return res.status(502).json({
                 status: "provider_error",
-                error: "API-Football returned a provider error while looking up fixtures.",
-                providerErrors: providerErrors || null
+                error: "Football-Data.org could not return fixtures for this date.",
+                providerStatus: providerResponse.status,
+                providerMessage: data && data.message ? String(data.message).slice(0, 250) : undefined
             });
         }
+        const fixtures = Array.isArray(data.matches) ? data.matches : [];
         const targetHome = normalizeTeamName(homeTeam);
         const targetAway = normalizeTeamName(awayTeam);
-        const fixtures = Array.isArray(data.response) ? data.response : [];
-        const candidates = fixtures.filter(item => {
-            const actualHome = normalizeTeamName(item && item.teams && item.teams.home && item.teams.home.name);
-            const actualAway = normalizeTeamName(item && item.teams && item.teams.away && item.teams.away.name);
-            return actualHome === targetHome && actualAway === targetAway;
-        });
+        const candidates = fixtures.filter(item =>
+            normalizeTeamName(item && item.homeTeam && (item.homeTeam.name || item.homeTeam.shortName)) === targetHome &&
+            normalizeTeamName(item && item.awayTeam && (item.awayTeam.name || item.awayTeam.shortName)) === targetAway
+        );
         let result;
         if (candidates.length === 1) {
             const item = candidates[0];
             result = {
                 status: "fixture_resolved",
                 verifiedAt: new Date().toISOString(),
-                source: "API-Football / API-Sports",
+                source: "Football-Data.org",
                 fixture: {
-                    fixtureId: item.fixture && item.fixture.id,
-                    date: item.fixture && item.fixture.date,
-                    status: item.fixture && item.fixture.status && item.fixture.status.short,
-                    homeTeam: item.teams && item.teams.home && item.teams.home.name,
-                    homeTeamId: item.teams && item.teams.home && item.teams.home.id,
-                    awayTeam: item.teams && item.teams.away && item.teams.away.name,
-                    awayTeamId: item.teams && item.teams.away && item.teams.away.id,
-                    competition: item.league && item.league.name,
-                    season: item.league && item.league.season
+                    fixtureId: item.id,
+                    fixtureIdProvider: "Football-Data.org",
+                    date: item.utcDate,
+                    status: item.status,
+                    homeTeam: item.homeTeam && item.homeTeam.name,
+                    homeTeamId: item.homeTeam && item.homeTeam.id,
+                    awayTeam: item.awayTeam && item.awayTeam.name,
+                    awayTeamId: item.awayTeam && item.awayTeam.id,
+                    competition: item.competition && item.competition.name,
+                    season: item.season && item.season.startDate ? Number(item.season.startDate.slice(0, 4)) : undefined
                 },
-                nextStep: "Use the returned API-Football fixtureId to query verified injury records."
+                nextStep: "This is a Football-Data.org match ID. Do not use it as an API-Football fixtureId; injury data needs a matching ID from its own provider."
             };
         } else {
             result = {
                 status: candidates.length ? "ambiguous_fixture" : "fixture_not_found",
                 verifiedAt: new Date().toISOString(),
-                source: "API-Football / API-Sports",
+                source: "Football-Data.org",
                 query: { homeTeam, awayTeam, date },
                 candidateCount: candidates.length,
                 providerFixtureCount: fixtures.length,
                 sampleFixtures: candidates.length ? undefined : fixtures.slice(0, 8).map(item => ({
-                    homeTeam: item && item.teams && item.teams.home && item.teams.home.name,
-                    awayTeam: item && item.teams && item.teams.away && item.teams.away.name,
-                    competition: item && item.league && item.league.name,
-                    kickoff: item && item.fixture && item.fixture.date
+                    homeTeam: item && item.homeTeam && item.homeTeam.name,
+                    awayTeam: item && item.awayTeam && item.awayTeam.name,
+                    competition: item && item.competition && item.competition.name,
+                    kickoff: item && item.utcDate
                 })),
                 interpretation: candidates.length
-                    ? "More than one exact team-name match was found; no fixture was selected."
+                    ? "More than one exact home/away team-name match was found; no fixture was selected."
                     : fixtures.length === 0
-                        ? "The provider returned zero fixtures for this date. This points to date coverage or provider-plan access, not a team-name mismatch."
-                        : "The provider returned fixtures for this date, but no exact home/away team-name match. Check the sample fixtures for the correct match and team spelling."
+                        ? "Football-Data.org returned zero matches for this date, which may be due to its competition coverage or account access."
+                        : "Matches were returned for this date, but no exact home/away team-name match was found. Check sampleFixtures for provider spelling or aliases."
             };
         }
         resolvedFixtureCache.set(cacheKey, { expiresAt: Date.now() + RESOLVED_FIXTURE_CACHE_TTL_MS, data: result });
         return res.json(result);
     } catch (error) {
-        console.error("Fixture resolution request failed:", error.message);
+        console.error("Football-Data.org fixture resolution request failed:", error.message);
         return res.status(502).json({ status: "provider_error", error: "Unable to resolve the fixture right now." });
     }
 });
