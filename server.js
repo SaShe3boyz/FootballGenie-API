@@ -891,9 +891,22 @@ app.get("/api/match-intelligence/resolve-fixture", async (req, res) => {
         let data;
         try { data = JSON.parse(textBody); }
         catch (_) { return res.status(502).json({ status: "provider_error", error: "Fixture provider returned an unreadable response." }); }
-        if (!providerResponse.ok || (Array.isArray(data.errors) && data.errors.length)) {
-            console.warn("API-Football fixture resolution failed:", JSON.stringify(data.errors || {}).slice(0, 500));
-            return res.status(502).json({ status: "provider_error", error: "The provider could not resolve this fixture." });
+        const providerErrors = data && data.errors;
+        const hasProviderErrors = providerErrors && (
+            (Array.isArray(providerErrors) && providerErrors.length > 0) ||
+            (typeof providerErrors === "object" && !Array.isArray(providerErrors) && Object.keys(providerErrors).length > 0) ||
+            (typeof providerErrors === "string" && providerErrors.trim().length > 0)
+        );
+        if (!providerResponse.ok || hasProviderErrors) {
+            const safeProviderErrors = typeof providerErrors === "string"
+                ? providerErrors.slice(0, 500)
+                : JSON.stringify(providerErrors || {}).slice(0, 500);
+            console.warn("API-Football fixture resolution failed:", safeProviderErrors);
+            return res.status(502).json({
+                status: "provider_error",
+                error: "API-Football returned a provider error while looking up fixtures.",
+                providerErrors: providerErrors || null
+            });
         }
         const targetHome = normalizeTeamName(homeTeam);
         const targetAway = normalizeTeamName(awayTeam);
