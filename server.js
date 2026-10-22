@@ -855,6 +855,94 @@ app.get("/api/team-stats", async (req, res) => {
 });
 
 
+// Resolve a real fixture from team names/date before querying injuries.
+// This avoids mixing football-data.org IDs with API-Football IDs.
+const resolvedFixtureCache = new Map();
+const RESOLVED_FIXTURE_CACHE_TTL_MS = 15 * 60 * 1000;
+function normalizeTeamName(value) {
+    return String(value || "").toLowerCase()
+        .normalize("NFD").replace(/[\\u0300-\\u036f]/g, "")
+        .replace(/\\b(fc|afc|cf|sc|club|football club)\\b/g, " ")
+        .replace(/[^a-z0-9]+/g, " ").trim().replace(/\\s+/g, " ");
+}
+app.get("/api/match-intelligence/resolve-fixture", async (req, res) => {
+    const providerKey = process.env.API_FOOTBALL_API_KEY || process.env.APIFOOTBALL_API_KEY;
+    if (!providerKey) {
+        return res.status(503).json({ status: "not_configured", error: "Injury intelligence provider is not configured." });
+    }
+    const homeTeam = String(req.query.homeTeam || "").trim().slice(0, 100);
+    const awayTeam = String(req.query.awayTeam || "").trim().slice(0, 100);
+    const date = String(req.query.date || "").trim();
+    if (!homeTeam || !awayTeam || !/^\\d{4}-\\d{2}-\\d{2}$/.test(date) || Number.isNaN(Date.parse(date + "T00:00:00Z"))) {
+        return res.status(400).json({ error: "Provide homeTeam, awayTeam, and date in YYYY-MM-DD format." });
+    }
+    const cacheKey = [normalizeTeamName(homeTeam), normalizeTeamName(awayTeam), date].join("|");
+    const cached = resolvedFixtureCache.get(cacheKey);
+    if (cached && Date.now() < cached.expiresAt) {
+        res.set("X-Football-Genie-Cache", "HIT");
+        return res.json(cached.data);
+    }
+    try {
+        const providerResponse = await fetch("https://v3.football.api-sports.io/fixtures?date=" + encodeURIComponent(date), {
+            headers: { "x-apisports-key": providerKey },
+            signal: AbortSignal.timeout(12000)
+        });
+        const textBody = await providerResponse.text();
+        let data;
+        try { data = JSON.parse(textBody); }
+        catch (_) { return res.status(502).json({ status: "provider_error", error: "Fixture provider returned an unreadable response." }); }
+        if (!providerResponse.ok || (Array.isArray(data.errors) && data.errors.length)) {
+            console.warn("API-Football fixture resolution failed:", JSON.stringify(data.errors || {}).slice(0, 500));
+            return res.status(502).json({ status: "provider_error", error: "The provider could not resolve this fixture." });
+        }
+        const targetHome = normalizeTeamName(homeTeam);
+        const targetAway = normalizeTeamName(awayTeam);
+        const fixtures = Array.isArray(data.response) ? data.response : [];
+        const candidates = fixtures.filter(item => {
+            const actualHome = normalizeTeamName(item && item.teams && item.teams.home && item.teams.home.name);
+            const actualAway = normalizeTeamName(item && item.teams && item.teams.away && item.teams.away.name);
+            return actualHome === targetHome && actualAway === targetAway;
+        });
+        let result;
+        if (candidates.length === 1) {
+            const item = candidates[0];
+            result = {
+                status: "fixture_resolved",
+                verifiedAt: new Date().toISOString(),
+                source: "API-Football / API-Sports",
+                fixture: {
+                    fixtureId: item.fixture && item.fixture.id,
+                    date: item.fixture && item.fixture.date,
+                    status: item.fixture && item.fixture.status && item.fixture.status.short,
+                    homeTeam: item.teams && item.teams.home && item.teams.home.name,
+                    homeTeamId: item.teams && item.teams.home && item.teams.home.id,
+                    awayTeam: item.teams && item.teams.away && item.teams.away.name,
+                    awayTeamId: item.teams && item.teams.away && item.teams.away.id,
+                    competition: item.league && item.league.name,
+                    season: item.league && item.league.season
+                },
+                nextStep: "Use the returned API-Football fixtureId to query verified injury records."
+            };
+        } else {
+            result = {
+                status: candidates.length ? "ambiguous_fixture" : "fixture_not_found",
+                verifiedAt: new Date().toISOString(),
+                source: "API-Football / API-Sports",
+                query: { homeTeam, awayTeam, date },
+                candidateCount: candidates.length,
+                interpretation: candidates.length
+                    ? "More than one exact team-name match was found; no fixture was selected."
+                    : "No exact fixture match was returned for these team names and date. This may reflect provider coverage, aliases, or date/time-zone differences; it does not prove the match does not exist."
+            };
+        }
+        resolvedFixtureCache.set(cacheKey, { expiresAt: Date.now() + RESOLVED_FIXTURE_CACHE_TTL_MS, data: result });
+        return res.json(result);
+    } catch (error) {
+        console.error("Fixture resolution request failed:", error.message);
+        return res.status(502).json({ status: "provider_error", error: "Unable to resolve the fixture right now." });
+    }
+});
+
 // Source-backed injury and suspension intelligence via API-Football (API-Sports).
 // Use API-Football IDs here; IDs from football-data.org are not interchangeable.
 const injuryCache = new Map();
