@@ -907,7 +907,7 @@ app.get("/api/match-intelligence/injuries", async (req, res) => {
             return res.status(502).json({ status: "provider_error", error: "Injury provider returned an unreadable response." });
         }
         if (!response.ok) {
-            return res.status(response.status === 401 || response.status === 403 ? 502 : response.status, {
+            return res.status(response.status === 401 || response.status === 403 ? 502 : response.status).json({
                 status: "provider_error",
                 error: "Injury provider request failed.",
                 providerStatus: response.status
