@@ -855,6 +855,106 @@ app.get("/api/team-stats", async (req, res) => {
 });
 
 
+// Source-backed injury and suspension intelligence via API-Football (API-Sports).
+// Use API-Football IDs here; IDs from football-data.org are not interchangeable.
+const injuryCache = new Map();
+const INJURY_CACHE_TTL_MS = 15 * 60 * 1000;
+app.get("/api/match-intelligence/injuries", async (req, res) => {
+    const providerKey = process.env.API_FOOTBALL_API_KEY || process.env.APIFOOTBALL_API_KEY;
+    if (!providerKey) {
+        return res.status(503).json({
+            status: "not_configured",
+            error: "Injury intelligence provider is not configured.",
+            requiredEnvironmentVariable: "API_FOOTBALL_API_KEY",
+            setup: "Add an API-Football/API-Sports key to the Render environment, then redeploy."
+        });
+    }
+
+    const fixtureId = String(req.query.fixtureId || "").trim();
+    const teamId = String(req.query.teamId || "").trim();
+    const season = String(req.query.season || "").trim();
+    if (fixtureId && !/^\\d+$/.test(fixtureId)) {
+        return res.status(400).json({ error: "fixtureId must be a numeric API-Football fixture ID." });
+    }
+    if (!fixtureId && (!/^\\d+$/.test(teamId) || !/^\\d{4}$/.test(season))) {
+        return res.status(400).json({
+            error: "Provide fixtureId, or provide teamId and season using API-Football IDs."
+        });
+    }
+
+    const params = new URLSearchParams();
+    if (fixtureId) params.set("fixture", fixtureId);
+    else {
+        params.set("team", teamId);
+        params.set("season", season);
+    }
+    const cacheKey = params.toString();
+    const cached = injuryCache.get(cacheKey);
+    if (cached && Date.now() < cached.expiresAt) {
+        res.set("X-Football-Genie-Cache", "HIT");
+        return res.json(cached.data);
+    }
+
+    try {
+        const response = await fetch("https://v3.football.api-sports.io/injuries?" + params.toString(), {
+            headers: { "x-apisports-key": providerKey },
+            signal: AbortSignal.timeout(12000)
+        });
+        const bodyText = await response.text();
+        let data;
+        try { data = JSON.parse(bodyText); }
+        catch (_) {
+            return res.status(502).json({ status: "provider_error", error: "Injury provider returned an unreadable response." });
+        }
+        if (!response.ok) {
+            return res.status(response.status === 401 || response.status === 403 ? 502 : response.status, {
+                status: "provider_error",
+                error: "Injury provider request failed.",
+                providerStatus: response.status
+            });
+        }
+        if (Array.isArray(data.errors) && data.errors.length) {
+            console.warn("API-Football injury provider returned errors:", JSON.stringify(data.errors).slice(0, 500));
+            return res.status(502).json({
+                status: "provider_error",
+                error: "Injury provider could not verify availability for this request."
+            });
+        }
+
+        const records = Array.isArray(data.response) ? data.response : [];
+        const injuries = records.map(item => ({
+            player: item.player && item.player.name || "Unknown player",
+            playerId: item.player && item.player.id != null ? item.player.id : null,
+            team: item.team && item.team.name || "Unknown team",
+            teamId: item.team && item.team.id != null ? item.team.id : null,
+            type: item.player && item.player.type || item.type || "Unavailable",
+            reason: item.player && item.player.reason || item.reason || "Reason not supplied",
+            fixtureId: item.fixture && item.fixture.id != null ? item.fixture.id : null,
+            fixtureDate: item.fixture && item.fixture.date || null
+        }));
+
+        const result = {
+            status: records.length ? "data_found" : "no_records_returned",
+            verifiedAt: new Date().toISOString(),
+            source: "API-Football / API-Sports",
+            query: fixtureId ? { fixtureId: Number(fixtureId) } : { teamId: Number(teamId), season: Number(season) },
+            count: injuries.length,
+            injuries,
+            interpretation: records.length
+                ? "The provider returned player unavailability records. Check each record's fixture/date and reason before applying a match impact."
+                : "The provider returned no records for this query. This does not prove that both teams have no injuries or suspensions; coverage may be incomplete."
+        };
+        injuryCache.set(cacheKey, { expiresAt: Date.now() + INJURY_CACHE_TTL_MS, data: result });
+        return res.json(result);
+    } catch (error) {
+        console.error("Injury intelligence request failed:", error.message);
+        return res.status(502).json({
+            status: "provider_error",
+            error: "Unable to retrieve injury intelligence right now."
+        });
+    }
+});
+
 // Groq is the primary AI provider for Football Genie.
 async function requestGroqAnswer(systemInstruction, userContent) {
     if (!process.env.GROQ_API_KEY) return null;
