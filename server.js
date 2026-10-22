@@ -930,9 +930,18 @@ app.get("/api/match-intelligence/resolve-fixture", async (req, res) => {
                 source: "API-Football / API-Sports",
                 query: { homeTeam, awayTeam, date },
                 candidateCount: candidates.length,
+                providerFixtureCount: fixtures.length,
+                sampleFixtures: candidates.length ? undefined : fixtures.slice(0, 8).map(item => ({
+                    homeTeam: item && item.teams && item.teams.home && item.teams.home.name,
+                    awayTeam: item && item.teams && item.teams.away && item.teams.away.name,
+                    competition: item && item.league && item.league.name,
+                    kickoff: item && item.fixture && item.fixture.date
+                })),
                 interpretation: candidates.length
                     ? "More than one exact team-name match was found; no fixture was selected."
-                    : "No exact fixture match was returned for these team names and date. This may reflect provider coverage, aliases, or date/time-zone differences; it does not prove the match does not exist."
+                    : fixtures.length === 0
+                        ? "The provider returned zero fixtures for this date. This points to date coverage or provider-plan access, not a team-name mismatch."
+                        : "The provider returned fixtures for this date, but no exact home/away team-name match. Check the sample fixtures for the correct match and team spelling."
             };
         }
         resolvedFixtureCache.set(cacheKey, { expiresAt: Date.now() + RESOLVED_FIXTURE_CACHE_TTL_MS, data: result });
