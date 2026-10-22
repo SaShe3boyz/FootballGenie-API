@@ -873,10 +873,10 @@ app.get("/api/match-intelligence/injuries", async (req, res) => {
     const fixtureId = String(req.query.fixtureId || "").trim();
     const teamId = String(req.query.teamId || "").trim();
     const season = String(req.query.season || "").trim();
-    if (fixtureId && !/^\\d+$/.test(fixtureId)) {
+    if (fixtureId && !/^\d+$/.test(fixtureId)) {
         return res.status(400).json({ error: "fixtureId must be a numeric API-Football fixture ID." });
     }
-    if (!fixtureId && (!/^\\d+$/.test(teamId) || !/^\\d{4}$/.test(season))) {
+    if (!fixtureId && (!/^\d+$/.test(teamId) || !/^\d{4}$/.test(season))) {
         return res.status(400).json({
             error: "Provide fixtureId, or provide teamId and season using API-Football IDs."
         });
