@@ -885,7 +885,10 @@ app.get("/api/match-intelligence/resolve-fixture", async (req, res) => {
         return res.json(cached.data);
     }
     try {
-        const params = new URLSearchParams({ dateFrom: date, dateTo: date });
+        // Football-Data.org treats dateTo as exclusive, so request the following day to include the requested date.
+        const dayAfter = new Date(date + "T00:00:00Z");
+        dayAfter.setUTCDate(dayAfter.getUTCDate() + 1);
+        const params = new URLSearchParams({ dateFrom: date, dateTo: dayAfter.toISOString().slice(0, 10) });
         const providerResponse = await fetch("https://api.football-data.org/v4/matches?" + params.toString(), {
             headers: { "X-Auth-Token": providerKey },
             signal: AbortSignal.timeout(12000)
