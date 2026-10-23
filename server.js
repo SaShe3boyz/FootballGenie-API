@@ -1121,6 +1121,109 @@ app.get("/api/match-intelligence/injuries", async (req, res) => {
     }
 });
 
+// Free-first football news discovery using Google News RSS. RSS results are leads, not proof of player availability.
+// This endpoint returns short metadata/snippets and original article links; it does not republish full articles.
+const footballNewsCache = new Map();
+const FOOTBALL_NEWS_CACHE_TTL_MS = 10 * 60 * 1000;
+
+function decodeNewsXml(value) {
+    return String(value || "")
+        .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1")
+        .replace(/&amp;/g, "&")
+        .replace(/&quot;/g, '"')
+        .replace(/&#39;|&apos;/g, "'")
+        .replace(/&lt;/g, "<")
+        .replace(/&gt;/g, ">")
+        .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(Number(n)))
+        .replace(/&#x([0-9a-f]+);/gi, (_, n) => String.fromCodePoint(parseInt(n, 16)))
+        .trim();
+}
+
+function newsXmlTag(block, tag) {
+    const match = block.match(new RegExp("<" + tag + "(?:\\\\s[^>]*)?>([\\\\s\\\\S]*?)<\\\\/" + tag + ">", "i"));
+    return match ? decodeNewsXml(match[1]) : "";
+}
+
+app.get("/api/match-intelligence/news", async (req, res) => {
+    const homeTeam = String(req.query.homeTeam || "").trim().slice(0, 100);
+    const awayTeam = String(req.query.awayTeam || "").trim().slice(0, 100);
+    if (!homeTeam || !awayTeam) {
+        return res.status(400).json({
+            error: "homeTeam and awayTeam are required.",
+            example: "/api/match-intelligence/news?homeTeam=Arsenal&awayTeam=Chelsea"
+        });
+    }
+    if (homeTeam.length < 2 || awayTeam.length < 2 || homeTeam.toLowerCase() === awayTeam.toLowerCase()) {
+        return res.status(400).json({ error: "Provide two different valid team names." });
+    }
+    const cacheKey = homeTeam.toLowerCase() + "|" + awayTeam.toLowerCase();
+    const cached = footballNewsCache.get(cacheKey);
+    if (cached && Date.now() < cached.expiresAt) {
+        res.set("X-Football-Genie-Cache", "HIT");
+        return res.json(cached.data);
+    }
+
+    const query = '"' + homeTeam + '" "' + awayTeam + '" (injury OR injured OR unavailable OR suspension OR suspended OR lineup OR "team news")';
+    const feedUrl = "https://news.google.com/rss/search?" + new URLSearchParams({
+        q: query,
+        hl: "en",
+        gl: "GB",
+        ceid: "GB:en"
+    }).toString();
+
+    try {
+        const response = await fetch(feedUrl, {
+            headers: { "User-Agent": "FootballGenie/1.0 (football news discovery; RSS reader)", "Accept": "application/rss+xml, application/xml, text/xml" },
+            signal: AbortSignal.timeout(12000)
+        });
+        if (!response.ok) {
+            return res.status(502).json({
+                status: "news_provider_error",
+                error: "Google News RSS could not be reached right now.",
+                providerStatus: response.status
+            });
+        }
+        const xml = await response.text();
+        if (!/<rss[\s>]/i.test(xml) || !/<item[\s>]/i.test(xml)) {
+            return res.status(502).json({ status: "news_provider_error", error: "Google News returned an unexpected feed format." });
+        }
+        const items = [...xml.matchAll(/<item(?:\s[^>]*)?>([\s\S]*?)<\/item>/gi)].slice(0, 15).map(match => {
+            const block = match[1];
+            const title = newsXmlTag(block, "title");
+            const link = newsXmlTag(block, "link");
+            const publishedAt = newsXmlTag(block, "pubDate");
+            const description = newsXmlTag(block, "description").replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").slice(0, 500);
+            const source = newsXmlTag(block, "source");
+            const parsedDate = publishedAt ? new Date(publishedAt) : null;
+            return {
+                title: title.slice(0, 300),
+                source: source.slice(0, 120) || "Source not identified",
+                publishedAt: parsedDate && !Number.isNaN(parsedDate.getTime()) ? parsedDate.toISOString() : null,
+                snippet: description,
+                url: /^https?:\/\//i.test(link) ? link : null
+            };
+        }).filter(item => item.title && item.url);
+
+        const result = {
+            status: items.length ? "news_found" : "no_matching_articles",
+            source: "Google News RSS",
+            teams: { home: homeTeam, away: awayTeam },
+            searchedAt: new Date().toISOString(),
+            count: items.length,
+            articles: items,
+            importantNotice: "Search results are leads, not verified injury records. Check the original article, its date, player identity, team, and whether availability is confirmed. No results does not mean there are no injuries."
+        };
+        footballNewsCache.set(cacheKey, { expiresAt: Date.now() + FOOTBALL_NEWS_CACHE_TTL_MS, data: result });
+        return res.json(result);
+    } catch (error) {
+        console.error("Football news RSS search failed:", error.message);
+        return res.status(502).json({
+            status: "news_provider_error",
+            error: "Unable to retrieve football news right now. Please try again later."
+        });
+    }
+});
+
 // Groq is the primary AI provider for Football Genie.
 async function requestGroqAnswer(systemInstruction, userContent) {
     if (!process.env.GROQ_API_KEY) return null;
