@@ -1659,8 +1659,9 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
     }
 
     const cacheKey = homeTeam.toLowerCase() + "::" + awayTeam.toLowerCase();
+    const forceRefresh = /^(1|true|yes)$/i.test(String(req.query.forceRefresh || ""));
     const cached = absenteeReportCache.get(cacheKey);
-    if (cached && Date.now() < cached.expiresAt) {
+    if (!forceRefresh && cached && Date.now() < cached.expiresAt) {
         res.set("X-Football-Genie-Cache", "HIT");
         return res.json(cached.data);
     }
@@ -1669,8 +1670,8 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
         const newsUrl = new URL("/api/match-intelligence/news", req.protocol + "://" + req.get("host"));
         newsUrl.searchParams.set("homeTeam", homeTeam);
         newsUrl.searchParams.set("awayTeam", awayTeam);
-        // Respect the existing news cache; this endpoint should not fan out fresh RSS requests.
-        newsUrl.searchParams.set("forceRefresh", "false");
+        // Allow a deliberate diagnostic refresh to bypass both cache layers.
+        newsUrl.searchParams.set("forceRefresh", forceRefresh ? "true" : "false");
         const newsResponse = await fetch(newsUrl, {
             headers: { "Accept": "application/json" },
             signal: AbortSignal.timeout(15000)
