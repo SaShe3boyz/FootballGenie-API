@@ -1346,7 +1346,7 @@ app.get("/api/match-intelligence/news", async (req, res) => {
     const maxAgeMs = FOOTBALL_NEWS_MAX_AGE_DAYS * 24 * 60 * 60 * 1000;
     const feedEntries = [...xml.matchAll(/<item(?:\s[^>]*)?>([\s\S]*?)<\/item>/gi)];
     const atomEntries = feedEntries.length ? [] : [...xml.matchAll(/<entry(?:\s[^>]*)?>([\s\S]*?)<\/entry>/gi)];
-    const parsedItems = [...(feedEntries.length ? feedEntries : atomEntries)].slice(0, 50).map(match => {
+    const parsedCandidates = [...(feedEntries.length ? feedEntries : atomEntries)].slice(0, 50).map(match => {
         const block = match[1];
         const title = newsXmlTag(block, "title");
         const atomLink = (block.match(/<link\b[^>]*\bhref\s*=\s*["']([^"']+)["'][^>]*\/?\s*>/i) || [])[1] || "";
@@ -1408,14 +1408,36 @@ app.get("/api/match-intelligence/news", async (req, res) => {
             hasSpamSignals,
             hasHeadlineNoise
         };
-    }).filter(item => item.title && item.url && !item.isWomensStory &&
-        !item.hasSpamSignals && !item.hasHeadlineNoise &&
-        item.publishedAt !== null && item.ageDays !== null && item.ageDays >= 0 &&
-        item.ageDays <= FOOTBALL_NEWS_MAX_AGE_DAYS &&
-        item.relevanceScore >= 3 &&
-        item.fixtureRelevance !== "other_fixture_excluded_from_analysis" &&
-        (item.title.toLowerCase().includes(homeTeam.toLowerCase()) || item.title.toLowerCase().includes(awayTeam.toLowerCase())) &&
-        item.categories.some(category => ["injury", "suspension", "lineup", "manager_comment"].includes(category)));
+    });
+    const filterDiagnostics = {
+        parsedCandidates: parsedCandidates.length,
+        missingTitleOrUrl: 0,
+        womenStories: 0,
+        spamSignals: 0,
+        headlineNoise: 0,
+        missingOrInvalidDate: 0,
+        futureDates: 0,
+        staleDates: 0,
+        lowRelevance: 0,
+        conflictingOpponent: 0,
+        noTargetTeamInTitle: 0,
+        noRelevantNewsCategory: 0
+    };
+    const parsedItems = parsedCandidates.filter(item => {
+        if (!item.title || !item.url) { filterDiagnostics.missingTitleOrUrl++; return false; }
+        if (item.isWomensStory) { filterDiagnostics.womenStories++; return false; }
+        if (item.hasSpamSignals) { filterDiagnostics.spamSignals++; return false; }
+        if (item.hasHeadlineNoise) { filterDiagnostics.headlineNoise++; return false; }
+        if (item.publishedAt === null || item.ageDays === null) { filterDiagnostics.missingOrInvalidDate++; return false; }
+        if (item.ageDays < 0) { filterDiagnostics.futureDates++; return false; }
+        if (item.ageDays > FOOTBALL_NEWS_MAX_AGE_DAYS) { filterDiagnostics.staleDates++; return false; }
+        if (item.relevanceScore < 3) { filterDiagnostics.lowRelevance++; return false; }
+        if (item.fixtureRelevance === "other_fixture_excluded_from_analysis") { filterDiagnostics.conflictingOpponent++; return false; }
+        if (!(item.title.toLowerCase().includes(homeTeam.toLowerCase()) || item.title.toLowerCase().includes(awayTeam.toLowerCase()))) { filterDiagnostics.noTargetTeamInTitle++; return false; }
+        if (!item.categories.some(category => ["injury", "suspension", "lineup", "manager_comment"].includes(category))) { filterDiagnostics.noRelevantNewsCategory++; return false; }
+        return true;
+    });
+    filterDiagnostics.accepted = parsedItems.length;
 
     parsedItems.sort((a, b) => b.relevanceScore - a.relevanceScore ||
         ((a.ageDays === null ? 9999 : a.ageDays) - (b.ageDays === null ? 9999 : b.ageDays)));
@@ -1435,6 +1457,7 @@ app.get("/api/match-intelligence/news", async (req, res) => {
             forceRefreshAvailable: true
         },
         maxArticleAgeDays: FOOTBALL_NEWS_MAX_AGE_DAYS,
+        filterDiagnostics,
         count: items.length,
         articles: items,
         importantNotice: "News items are search leads, not verified player-availability records. Headlines that clearly name a different opponent are excluded to reduce cross-fixture contamination. Articles with missing or future publication dates are excluded. Open the original source and verify the exact fixture, player, team, and availability before changing a prediction. 'Confirmed' is a wording signal, not independent verification. No results does not mean there are no injuries."
