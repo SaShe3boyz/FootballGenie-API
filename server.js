@@ -2848,9 +2848,13 @@ app.post("/api/ai/analyze", async (req, res) => {
             });
             const newsData = await newsResponse.json().catch(() => ({}));
             if (newsResponse.ok) {
-                const rawArticles = Array.isArray(newsData.articles) ? newsData.articles : [];
-                // Prefer articles tagged as about this fixture; retain only a small
-                // amount of team background and label it clearly for the AI.
+                const allNewsArticles = Array.isArray(newsData.articles) ? newsData.articles : [];
+                // Injury/availability analysis accepts official club website evidence only.
+                // Third-party publications are deliberately ignored for absentee claims.
+                const rawArticles = allNewsArticles.filter(article =>
+                    article.officialClubSource === true || article.sourceTrustTier === "official_club_website"
+                );
+                const nonOfficialArticlesIgnored = allNewsArticles.length - rawArticles.length;
                 const directArticles = rawArticles.filter(article => article.fixtureRelevance === "direct_fixture");
                 const backgroundArticles = rawArticles.filter(article =>
                     article.fixtureRelevance === "team_background_news" ||
@@ -2878,7 +2882,7 @@ app.post("/api/ai/analyze", async (req, res) => {
                     };
                 });
                 teamNewsEvidenceStatus = articles.length ? "articles_found" : "no_articles_found";
-                userContent += "\nONLINE-PUBLICATION TEAM-NEWS EVIDENCE (search leads only; not independently verified):\n" +
+                userContent += "\nOFFICIAL-CLUB TEAM-NEWS EVIDENCE ONLY (third-party publications ignored: " + nonOfficialArticlesIgnored + "):\n" +
                     JSON.stringify({
                         status: newsData.status || "unknown",
                         searchedAt: newsData.searchedAt || null,
@@ -2892,7 +2896,7 @@ app.post("/api/ai/analyze", async (req, res) => {
         } catch (newsError) {
             userContent += "\nONLINE-PUBLICATION TEAM-NEWS EVIDENCE: search timed out or failed; do not guess current absentees.";
         }
-        userContent += "\nTEAM-NEWS SAFETY RULE: Use only supplied article titles/snippets. For every player-specific report cite the evidenceId, exact title, publication/source, publication date, and URL. Treat sourceAuthority as a heuristic only: never call a story official unless the linked original page itself is clearly an official club, league, or federation page. Prefer direct_fixture evidence; explicitly label background or other-fixture stories and do not use them to claim a player will miss THIS fixture. Freshness is based on the publication date and does not prove the report is still current. Headlines/snippets are not proof of current club, diagnosis, or availability; call unconfirmed reports unconfirmed. If no relevant evidence exists, say so; absence of reports does not mean the squad is fully fit. Never invent names or change numerical probabilities.";
+        userContent += "\nTEAM-NEWS SAFETY RULE: Use only supplied official club website article titles/snippets. Third-party publications are not evidence for absentee claims. For every player-specific report cite the evidenceId, exact title, source, and date if available. Prefer direct_fixture evidence; background or other-fixture stories must not be used to claim a player will miss THIS fixture. Freshness does not prove the report is current. Do not infer a diagnosis or availability from a vague headline. If no relevant official evidence exists, explicitly say Football Genie found no relevant official club update; do not fill the gap with other publications or guesses. Absence of a report does not mean the squad is fully fit. Never invent names or change numerical probabilities.";
     }
 
     void logSystemEvent("ai_analysis_requested", "info", "AI analysis request received.", { questionLength: prompt.length, teamNewsEvidenceStatus });
