@@ -2275,6 +2275,56 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
                 }
             } catch (_) { officialSiteListingDiagnostics.errors += 1; }
         }));
+        // Everton's official news URLs use a date + headline slug. If search engines
+        // hide the destination URL, safely reconstruct candidate slugs and verify the page
+        // title/content on Everton's own domain before accepting the URL.
+        const officialSlugResolutionDiagnostics = { attempted: 0, resolved: 0, errors: 0 };
+        const evertonSlugCandidates = articles.filter(article => {
+            if (!article.officialClubSource || !article.url || !/news\.google\.com/i.test(article.url) || !article.publishedAt) return false;
+            try { return /(^|\.)evertonfc\.com$/i.test(new URL(article.publisherSourceUrl || "").hostname); }
+            catch (_) { return false; }
+        }).slice(0, 5);
+        await Promise.all(evertonSlugCandidates.map(async article => {
+            officialSlugResolutionDiagnostics.attempted += 1;
+            try {
+                const date = new Date(article.publishedAt);
+                if (!Number.isFinite(date.getTime())) return;
+                const year = String(date.getUTCFullYear());
+                const month = new Intl.DateTimeFormat("en-GB", { month: "long", timeZone: "UTC" }).format(date).toLowerCase();
+                const day = String(date.getUTCDate()).padStart(2, "0");
+                const title = String(article.title || "").replace(/\s+-\s+Everton FC$/i, "");
+                const asciiTitle = title.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+                const slugWithAmpersand = asciiTitle.replace(/&/g, "-").replace(/[’']/g, "").replace(/\s+/g, "-").replace(/[^A-Za-z0-9-]/g, "");
+                const slugVariants = [...new Set([slugWithAmpersand, slugWithAmpersand.replace(/-{2,}/g, "-")])];
+                const sourceTokens = new Set(normalizeOfficialHeadline(title));
+                for (const slug of slugVariants) {
+                    const candidateUrl = "https://www.evertonfc.com/news/" + year + "/" + month + "/" + day + "/" + slug;
+                    const response = await fetch(candidateUrl, {
+                        headers: { "Accept": "text/html,application/xhtml+xml", "User-Agent": "Mozilla/5.0 (compatible; FootballGenie/1.0)" },
+                        redirect: "follow",
+                        signal: AbortSignal.timeout(4500)
+                    });
+                    if (!response.ok) continue;
+                    const finalUrl = new URL(response.url);
+                    if (!/(^|\.)evertonfc\.com$/i.test(finalUrl.hostname)) continue;
+                    const html = (await response.text()).slice(0, 1_000_000);
+                    const visibleText = html.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, " ")
+                        .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, " ")
+                        .replace(/<[^>]+>/g, " ").replace(/&nbsp;|&#160;/gi, " ")
+                        .replace(/&amp;/gi, "&").replace(/&quot;/gi, '"')
+                        .replace(/&#39;|&apos;/gi, "'").replace(/\s+/g, " ").trim();
+                    const visibleTokens = new Set(normalizeOfficialHeadline(visibleText.slice(0, 12000)));
+                    const overlap = [...sourceTokens].filter(token => visibleTokens.has(token)).length;
+                    if (overlap / Math.max(sourceTokens.size, 1) >= 0.6) {
+                        article.url = finalUrl.href;
+                        article.originalPublisherUrlResolved = true;
+                        article.publisherUrlResolutionMethod = "verified_official_everton_date_slug";
+                        officialSlugResolutionDiagnostics.resolved += 1;
+                        break;
+                    }
+                }
+            } catch (_) { officialSlugResolutionDiagnostics.errors += 1; }
+        }));
         // Fetch the original official club page when the resolved URL is on a supported club domain.
         // Page text enriches evidence; it does not by itself confirm availability for this fixture.
         const officialPageFetchDiagnostics = { attempted: 0, fetched: 0, nonOfficialSkipped: 0, errors: 0 };
@@ -2331,7 +2381,7 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
         // the fixture/team, e.g. "Man City Injury News: Semenyo Out, O'Reilly Doubt".
         // Status is derived per named phrase so one doubtful player does not downgrade
         // a separate player explicitly reported out in the same headline.
-        const namedAvailabilityPattern = /((?:[A-Z][A-Za-z'’.-]{2,}(?:\s+[A-Z][A-Za-z'’.-]{1,}){0,2})(?:\s+(?:and|&)\s+[A-Z][A-Za-z'’.-]{2,}(?:\s+[A-Z][A-Za-z'’.-]{1,}){0,1})?)\s+(?:(?:is|has been|will be)\s+)?(ruled out|out\b|injured\b|sidelined\b|set to miss|will miss|to miss|a doubt\b|doubts?\b|doubtful\b|faces? .*? injury|suffers? .*? injury|suffers? .*? knock|fit\b|available\b|back in training|returns? to training|returns? to the squad|available for selection)/gi;
+        const namedAvailabilityPattern = /((?:[A-Z][A-Za-z'’.-]{2,}(?:\s+[A-Z][A-Za-z'’.-]{1,}){0,2})(?:\s+(?:and|&)\s+[A-Z][A-Za-z'’.-]{2,}(?:\s+[A-Z][A-Za-z'’.-]{1,}){0,1})?)\s+(?:(?:is|has been|will be|was|were|have(?: also)? been|has also been)\s+)?(ruled out|out\b|injured\b|sidelined\b|set to miss|will miss|to miss|a doubt\b|doubts?\b|doubtful\b|could return|may return|could be available|faces? .*? injury|suffers? .*? injury|suffers? .*? knock|fit\b|available\b|back in training|returns? to training|returns? to the squad|available for selection)/gi;
         candidateReports = articles.flatMap(evidence => {
             const title = String(evidence.title || "");
             const availabilityText = title + " " + String(evidence.snippet || "");
@@ -2344,7 +2394,7 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
             return matches.flatMap(match => {
                 const namesText = String(match[1] || "").trim();
                 const phrase = String(match[2] || "").toLowerCase();
-                const reportedStatus = /\b(?:a doubt|doubts?|doubtful)\b/.test(phrase)
+                const reportedStatus = /\b(?:a doubt|doubts?|doubtful|could return|may return|could be available)\b/.test(phrase)
                     ? "doubtful_or_test_pending"
                     : /\b(?:fit|available|back in training|returns? to training|returns? to the squad|available for selection)\b/.test(phrase)
                         ? "reported_available_check_source"
@@ -2589,6 +2639,7 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
             officialPageFetchDiagnostics,
             officialDomainSearchDiagnostics,
             officialSiteListingDiagnostics,
+            officialSlugResolutionDiagnostics,
             articleCount: articles.length,
             extractionStatus,
             aiModel,
