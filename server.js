@@ -978,7 +978,7 @@ app.get("/api/match-intelligence/provider-check", async (req, res) => {
         });
     }
     const teamId = String(req.query.teamId || "42").trim();
-    const season = String(req.query.season || "2025").trim();
+    const season = String(req.query.season || "2024").trim();
     if (!/^\d+$/.test(teamId) || !/^\d{4}$/.test(season)) {
         return res.status(400).json({ error: "teamId must be numeric and season must be a four-digit year." });
     }
