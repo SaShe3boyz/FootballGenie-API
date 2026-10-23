@@ -1918,13 +1918,28 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
                         sourceLinkType: (() => {
                             try {
                                 const host = new URL(evidence.url).hostname.toLowerCase();
-                                return host === "news.google.com" || host.endsWith(".news.google.com")
-                                    ? "news_aggregator_link_original_publisher_not_resolved"
-                                    : "publisher_link_candidate_not_independently_verified";
+                                if (host === "news.google.com" || host.endsWith(".news.google.com")) {
+                                    return "news_aggregator_link_original_publisher_not_resolved";
+                                }
+                                if (host === "mancity.com" || host.endsWith(".mancity.com") ||
+                                    host === "avfc.co.uk" || host.endsWith(".avfc.co.uk")) {
+                                    return "official_club_domain_direct_link_content_not_verified";
+                                }
+                                return "publisher_link_candidate_not_independently_verified";
                             } catch (_) {
                                 return "source_link_missing_or_invalid";
                             }
                         })(),
+                        officialPublisherDomainMatch: (() => {
+                            try {
+                                const host = new URL(evidence.url).hostname.toLowerCase();
+                                return host === "mancity.com" || host.endsWith(".mancity.com") ||
+                                    host === "avfc.co.uk" || host.endsWith(".avfc.co.uk");
+                            } catch (_) { return false; }
+                        })(),
+                        publisherUrlResolutionMethod: evidence.publisherUrlResolutionMethod ||
+                            (String(evidence.searchProvider || "").startsWith("Bing News RSS - official")
+                                ? "direct_official_club_domain_search_result" : null),
                         originalSourceUrlVerified: false,
                         sourceVerificationGuidance: reportedStatus === "reported_available_check_source"
                             ? "This headline suggests availability, not an absence. Open the original publisher or official club statement and confirm the named player, date, and exact fixture before marking available."
