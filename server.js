@@ -2107,6 +2107,41 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
             }
         }
 
+        // Secondary-publication leads require independent corroboration for the same
+        // player, requested team and availability status. Official club-domain evidence
+        // can stand alone as a primary-source lead, but is not treated as content-verified.
+        const isOfficialEvidenceReport = report => report.officialPublisherDomainMatch === true ||
+            report.sourceTrustTier === "official_club_website";
+        const normalizedPlayerText = value => normalizeTeamName(String(value || "").replace(/[^A-Za-z0-9'’ -]/g, " "));
+        const hasIndependentCorroboration = report => {
+            const playerKey = normalizedPlayerText(report.player);
+            const teamKey = normalizeTeamName(report.team);
+            if (!playerKey || !teamKey) return false;
+            const reportSource = String(report.source || "").toLowerCase();
+            const reportHost = (() => { try { return new URL(report.url).hostname.toLowerCase(); } catch (_) { return ""; } })();
+            return articles.some(other => {
+                if (other.evidenceId === report.evidenceId) return false;
+                const otherText = String(other.title || "") + " " + String(other.snippet || "");
+                if (!normalizedPlayerText(otherText).includes(playerKey)) return false;
+                if (!normalizeTeamName(otherText).includes(teamKey)) return false;
+                const otherSource = String(other.source || "").toLowerCase();
+                if (!otherSource || otherSource === reportSource) return false;
+                const otherHost = (() => { try { return new URL(other.url).hostname.toLowerCase(); } catch (_) { return ""; } })();
+                if (reportHost && otherHost && reportHost === otherHost) return false;
+                if (/news\.google\.com/i.test(String(other.url || ""))) return false;
+                const assessment = other.availabilityAssessment || "availability_not_established";
+                return report.reportedStatus === "reported_unavailable"
+                    ? assessment === "reported_unavailable_check_original_source"
+                    : report.reportedStatus === "doubtful_or_test_pending"
+                        ? assessment === "reported_doubtful_or_test_pending"
+                        : false;
+            });
+        };
+        const reportCountBeforeCorroboration = candidateReports.length;
+        candidateReports = candidateReports.filter(report =>
+            isOfficialEvidenceReport(report) || hasIndependentCorroboration(report));
+        const uncorroboratedSecondaryReportsSuppressed = reportCountBeforeCorroboration - candidateReports.length;
+
         // Resolve Google News wrapper URLs to their publisher destination when possible.
         // A resolved destination is NOT proof that the article confirms player availability.
         const googleNewsUrls = [...new Set(candidateReports
@@ -2291,6 +2326,10 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
             providerErrors: newsData.providerErrors || [],
             providerFeedDiagnostics: newsData.providerFeedDiagnostics || [],
             publisherLinkResolutionDiagnostics: newsData.publisherLinkResolutionDiagnostics || null,
+            sourceAgreementDiagnostics: {
+                policy: "official_club_source_or_two_independent_secondary_publications",
+                secondaryReportsSuppressedForLackOfCorroboration: uncorroboratedSecondaryReportsSuppressed
+            },
             resolverDiagnostics,
             articleCount: articles.length,
             extractionStatus,
