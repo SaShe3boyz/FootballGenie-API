@@ -1396,7 +1396,7 @@ app.get("/api/match-intelligence/news", async (req, res) => {
         const validDate = parsedDate && !Number.isNaN(parsedDate.getTime()) ? parsedDate : null;
         const ageMs = validDate ? now - validDate.getTime() : null;
         const lowerTitle = title.toLowerCase();
-        const contextMarker = /\\b(?:vs?\\.?|versus|against|ahead of|before|trip to|clash with|meeting with|showdown with|tie with|game against|match against|game with|match with)\\b/i;
+        const contextMarker = /\b(?:vs?\.?|versus|against|ahead of|before|after|following|trip to|clash with|meeting with|showdown with|tie with|game against|match against|game with|match with)\b/i;
         const contextIndex = title.search(contextMarker);
         const headlineSubjectText = (contextIndex >= 0 ? title.slice(0, contextIndex) : title).toLowerCase();
         const titleMentionsHome = lowerTitle.includes(homeTeam.toLowerCase());
@@ -1405,7 +1405,7 @@ app.get("/api/match-intelligence/news", async (req, res) => {
         const mentionsAway = headlineSubjectText.includes(awayTeam.toLowerCase());
         const mentionsBothTeams = titleMentionsHome && titleMentionsAway;
         const hasTargetTeamAsSubject = mentionsHome || mentionsAway || mentionsBothTeams;
-        const opponentPattern = /\\b(?:vs?\\.?|versus|against|ahead of|before|trip to|clash with|meeting with|showdown with|tie with|game against|match against|game with|match with)\\s+([A-Z][A-Za-z.\\u0027’&-]*(?:\\s+[A-Z][A-Za-z.\\u0027’&-]*){0,2})/g;
+        const opponentPattern = /\b(?:vs?\.?|versus|against|ahead of|before|after|following|trip to|clash with|meeting with|showdown with|tie with|game against|match against|game with|match with)\s+([A-Z][A-Za-z.'’&-]*(?:\s+[A-Z][A-Za-z.'’&-]*){0,2})/g;
         const namedOpponents = [...title.matchAll(opponentPattern)].map(match => match[1].trim());
         const targetNames = [homeTeam, awayTeam].map(name => name.toLowerCase());
         const isTargetTeamName = name => targetNames.some(target => target === name.toLowerCase() ||
@@ -1676,9 +1676,12 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
                     const team = allowedTeams.find(name => name.toLowerCase() === String(report.team || "").trim().toLowerCase());
                     if (!evidence || !player || !team) return [];
                     const evidenceText = evidence.title + " " + evidence.snippet;
-                    // Hard guards: player and assigned team must appear in the supplied evidence.
+                    const subjectMarker = /\b(?:vs?\.?|versus|against|ahead of|before|after|following|trip to|clash with|meeting with|showdown with|tie with|game against|match against|game with|match with)\b/i;
+                    const subjectEnd = evidence.title.search(subjectMarker);
+                    const articleSubject = (subjectEnd >= 0 ? evidence.title.slice(0, subjectEnd) : evidence.title).toLowerCase();
+                    // Do not assign a player to a team mentioned only as the opponent or in a different fixture.
                     if (!evidenceText.toLowerCase().includes(player.toLowerCase()) ||
-                        !evidenceText.toLowerCase().includes(team.toLowerCase())) return [];
+                        !articleSubject.includes(team.toLowerCase())) return [];
                     // Status comes from deterministic wording checks, not AI inference.
                     const reportedStatus = evidence.availabilityAssessment === "reported_unavailable_check_original_source"
                         ? "reported_unavailable"
