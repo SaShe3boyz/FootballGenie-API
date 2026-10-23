@@ -1294,8 +1294,8 @@ app.get("/api/match-intelligence/news", async (req, res) => {
             }
             // Bing News may return namespaced <News:News> records instead of RSS <item> elements.
             // Normalize those records into ordinary RSS items before the shared filters run.
-            if (provider.name === "Bing News RSS" && !/<(?:[A-Za-z0-9_.-]+:)?item\\b/i.test(candidateXml)) {
-                const records = [...candidateXml.matchAll(/<(?:[A-Za-z0-9_.-]+:)?News(?:\\s[^>]*)?>([\\s\\S]*?)<\\/(?:[A-Za-z0-9_.-]+:)?News>/gi)];
+            if (provider.name === "Bing News RSS" && !/<(?:[A-Za-z0-9_.-]+:)?item\b/i.test(candidateXml)) {
+                const records = [...candidateXml.matchAll(/<(?:[A-Za-z0-9_.-]+:)?News(?:\s[^>]*)?>([\s\S]*?)<\/(?:[A-Za-z0-9_.-]+:)?News>/gi)];
                 const escapeFeedXml = value => String(value || "").replace(/&/g, "&amp;").replace(/</g, "&lt;")
                     .replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&apos;");
                 const readNamespaced = (block, names) => {
