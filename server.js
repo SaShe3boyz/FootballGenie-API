@@ -1972,7 +1972,7 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
                 }
             }))].slice(0, 8);
         const resolvedPublisherUrls = new Map();
-        const resolverDiagnostics = { googleNewsUrlCount: googleNewsUrls.length, pageFetchSuccessCount: 0, directRedirectCount: 0, signatureExtractedCount: 0, signatureMissingCount: 0, rpcAttempted: false, rpcHttpStatus: null, rpcResponseLength: 0, rpcRowsParsed: 0, rpcAcceptedRows: 0, publisherDestinationsExtracted: 0, resolvedPublisherUrlCount: 0 };
+        const resolverDiagnostics = { googleNewsUrlCount: googleNewsUrls.length, pageFetchSuccessCount: 0, directRedirectCount: 0, signatureExtractedCount: 0, signatureMissingCount: 0, pageFetchErrorCount: 0, pageFetchErrorKinds: [], rpcAttempted: false, rpcHttpStatus: null, rpcErrorKind: null, rpcResponseLength: 0, rpcRowsParsed: 0, rpcAcceptedRows: 0, publisherDestinationsExtracted: 0, resolvedPublisherUrlCount: 0 };
 
         // Google News no longer reliably redirects RSS article links to publishers.
         // Its current flow requires a per-article signature followed by one batched
@@ -2020,7 +2020,10 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
                 }
                 resolverDiagnostics.signatureExtractedCount += 1;
                 return { originalUrl, articleId, signature, timestamp: Number(timestamp) };
-            } catch (_) {
+            } catch (error) {
+                resolverDiagnostics.pageFetchErrorCount += 1;
+                const kind = String(error && (error.cause && error.cause.code || error.name || error.message) || "unknown").slice(0, 100);
+                if (!resolverDiagnostics.pageFetchErrorKinds.includes(kind)) resolverDiagnostics.pageFetchErrorKinds.push(kind);
                 return null;
             }
         }));
@@ -2097,7 +2100,8 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
                         } catch (_) {}
                     }
                 }
-            } catch (_) {
+            } catch (error) {
+                resolverDiagnostics.rpcErrorKind = String(error && (error.cause && error.cause.code || error.name || error.message) || "unknown").slice(0, 100);
                 // Google may rate-limit or change the RPC; preserve the original RSS URL.
             }
         }
