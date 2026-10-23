@@ -2210,6 +2210,71 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
                 }
             } catch (_) { officialDomainSearchDiagnostics.errors += 1; }
         }));
+        // Final fallback: crawl only the official club's own news index. This avoids
+        // relying on Google News redirects or secondary publications for the article URL.
+        const officialSiteListingDiagnostics = { attempted: 0, pagesFetched: 0, resolved: 0, noMatch: 0, errors: 0 };
+        const officialListingCache = new Map();
+        const officialArticlesStillUnresolved = articles.filter(article => {
+            if (!article.officialClubSource || !article.url || !/news\.google\.com/i.test(article.url)) return false;
+            try {
+                const host = new URL(article.publisherSourceUrl || "").hostname.toLowerCase();
+                return ["arsenal.com", "evertonfc.com", "mancity.com", "avfc.co.uk", "rbleipzig.com", "borussia.com"]
+                    .some(domain => host === domain || host.endsWith("." + domain));
+            } catch (_) { return false; }
+        }).slice(0, 8);
+        const extractOfficialLinks = html => [...html.matchAll(/<a\b[^>]*\bhref\s*=\s*["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi)]
+            .map(match => ({
+                href: match[1],
+                text: match[2].replace(/<[^>]+>/g, " ").replace(/&nbsp;|&#160;/gi, " ")
+                    .replace(/&amp;/gi, "&").replace(/&quot;/gi, '"').replace(/&#39;|&apos;/gi, "'")
+                    .replace(/&lt;/gi, "<").replace(/&gt;/gi, ">").replace(/\s+/g, " ").trim()
+            })).filter(link => link.href && link.text.length > 8);
+        await Promise.all(officialArticlesStillUnresolved.map(async article => {
+            officialSiteListingDiagnostics.attempted += 1;
+            try {
+                const publisherHost = new URL(article.publisherSourceUrl).hostname.toLowerCase();
+                let listing = officialListingCache.get(publisherHost);
+                if (!listing) {
+                    const listingUrl = "https://" + publisherHost + "/news";
+                    const response = await fetch(listingUrl, {
+                        headers: { "Accept": "text/html,application/xhtml+xml", "User-Agent": "Mozilla/5.0 (compatible; FootballGenie/1.0)" },
+                        redirect: "follow",
+                        signal: AbortSignal.timeout(5000)
+                    });
+                    if (!response.ok) { officialSiteListingDiagnostics.errors += 1; return; }
+                    const finalHost = new URL(response.url).hostname.toLowerCase();
+                    if (!(finalHost === publisherHost || finalHost.endsWith("." + publisherHost))) {
+                        officialSiteListingDiagnostics.errors += 1; return;
+                    }
+                    const html = (await response.text()).slice(0, 1_500_000);
+                    listing = { baseUrl: response.url, links: extractOfficialLinks(html) };
+                    officialListingCache.set(publisherHost, listing);
+                    officialSiteListingDiagnostics.pagesFetched += 1;
+                }
+                const sourceTokens = new Set(normalizeOfficialHeadline(article.title));
+                let best = null;
+                let bestScore = 0;
+                for (const link of listing.links) {
+                    let target;
+                    try { target = new URL(link.href, listing.baseUrl); } catch (_) { continue; }
+                    const targetHost = target.hostname.toLowerCase();
+                    if (!(targetHost === publisherHost || targetHost.endsWith("." + publisherHost))) continue;
+                    if (!/\/news\//i.test(target.pathname) && !/\/news$/i.test(target.pathname)) continue;
+                    const linkTokens = new Set(normalizeOfficialHeadline(link.text));
+                    const overlap = [...sourceTokens].filter(token => linkTokens.has(token)).length;
+                    const score = overlap / Math.max(sourceTokens.size, linkTokens.size, 1);
+                    if (score > bestScore) { bestScore = score; best = { url: target.href, score }; }
+                }
+                if (best && best.score >= 0.35) {
+                    article.url = best.url;
+                    article.originalPublisherUrlResolved = true;
+                    article.publisherUrlResolutionMethod = "official_club_news_index_headline_match";
+                    officialSiteListingDiagnostics.resolved += 1;
+                } else {
+                    officialSiteListingDiagnostics.noMatch += 1;
+                }
+            } catch (_) { officialSiteListingDiagnostics.errors += 1; }
+        }));
         // Fetch the original official club page when the resolved URL is on a supported club domain.
         // Page text enriches evidence; it does not by itself confirm availability for this fixture.
         const officialPageFetchDiagnostics = { attempted: 0, fetched: 0, nonOfficialSkipped: 0, errors: 0 };
@@ -2523,6 +2588,7 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
             resolverDiagnostics,
             officialPageFetchDiagnostics,
             officialDomainSearchDiagnostics,
+            officialSiteListingDiagnostics,
             articleCount: articles.length,
             extractionStatus,
             aiModel,
