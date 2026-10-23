@@ -1371,7 +1371,12 @@ async function requestGroqAnswer(systemInstruction, userContent, options = {}) {
             if (!response.ok) {
                 const error = new Error("Groq HTTP " + response.status + ": " +
                     String(data.error && data.error.message || "provider request failed").slice(0, 220));
-                error.retryable = response.status === 429 || [500, 502, 503, 504].includes(response.status);
+                // Groq daily token/request quotas will not recover after a short retry.
+                // Avoid spending another request when the provider explicitly reports a daily limit.
+                error.quotaExhausted = response.status === 429 &&
+                    /tokens per day|requests per day|\bTPD\b|\bRPD\b|per-day limit|daily limit/i.test(error.message);
+                error.retryable = !error.quotaExhausted &&
+                    (response.status === 429 || [500, 502, 503, 504].includes(response.status));
                 const retryAfter = Number(response.headers.get("retry-after"));
                 error.retryAfterMs = Number.isFinite(retryAfter) && retryAfter > 0
                     ? Math.min(1500, retryAfter * 1000) : 500;
@@ -1511,17 +1516,22 @@ app.get("/api/match-intelligence/analyze", async (req, res) => {
         });
     } catch (error) {
         const diagnostic = String(error && error.message || "unknown");
-        const providerRateLimited = /Groq HTTP 429|rate.?limit|too many requests/i.test(diagnostic);
+        const providerQuotaExhausted = /Groq HTTP 429/i.test(diagnostic) &&
+            /tokens per day|requests per day|\bTPD\b|\bRPD\b|per-day limit|daily limit/i.test(diagnostic);
+        const providerRateLimited = !providerQuotaExhausted &&
+            /Groq HTTP 429|rate.?limit|too many requests/i.test(diagnostic);
         const providerUnavailable = /Groq HTTP 5\d\d|timeout|timed out|abort/i.test(diagnostic);
         console.error("Match intelligence analysis failed at " + failureStage + ":", diagnostic);
         const groqStatusMatch = diagnostic.match(/Groq HTTP (\d{3})/);
         lastMatchAnalysisFailure = {
-            status: providerRateLimited ? "provider_rate_limited" :
+            status: providerQuotaExhausted ? "provider_quota_exhausted" :
+                providerRateLimited ? "provider_rate_limited" :
                 providerUnavailable ? "provider_unavailable" : "analysis_failed",
             stage: failureStage,
             providerHttpStatus: groqStatusMatch ? Number(groqStatusMatch[1]) : null,
             errorType: /timeout|timed out|abort/i.test(diagnostic) ? "timeout" :
                 /Groq HTTP 401|Groq HTTP 403/i.test(diagnostic) ? "provider_authentication" :
+                providerQuotaExhausted ? "provider_daily_quota" :
                 /Groq HTTP 429|rate.?limit|too many requests/i.test(diagnostic) ? "provider_rate_limit" :
                 /Groq HTTP 5\d\d/i.test(diagnostic) ? "provider_server_error" :
                 failureStage === "news_fetch" ? "news_fetch_failure" : "other"
@@ -1529,8 +1539,18 @@ app.get("/api/match-intelligence/analyze", async (req, res) => {
         void logSystemEvent("match_intelligence_report_failed", "warning", "News intelligence analysis failed.", {
             stage: failureStage,
             providerRateLimited,
+            providerQuotaExhausted,
             error: diagnostic.slice(0, 180)
         });
+        if (providerQuotaExhausted) {
+            // Daily quota resets are provider-controlled; a 60-second retry would be misleading.
+            return res.status(503).json({
+                status: "ai_daily_quota_exhausted",
+                stage: failureStage,
+                retryable: false,
+                error: "Football Genie AI has reached its provider's daily usage limit. Match news and other app features may still work; AI analysis will resume when the provider quota resets."
+            });
+        }
         if (providerRateLimited) {
             res.set("Retry-After", "60");
             return res.status(503).json({
