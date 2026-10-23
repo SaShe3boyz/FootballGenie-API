@@ -1418,11 +1418,17 @@ app.get("/api/match-intelligence/news", async (req, res) => {
             : reportedUnavailable
                 ? "reported_unavailable_check_original_source"
                 : "availability_not_established";
-        const availabilityGuidance = reportedDoubtful
+        const availabilityScope = mentionsBothTeams
+            ? "both_teams_named_in_headline_not_fixture_verified"
+            : "single_team_background_not_fixture_verified";
+        const availabilityGuidance = (reportedDoubtful
             ? "The article suggests doubt or a pending fitness assessment; do not treat the player as confirmed absent."
             : reportedUnavailable
                 ? "The article uses wording that reports unavailability; verify the player, match, date, and original source."
-                : "This article does not establish whether a player is available or absent for this fixture.";
+                : "This article does not establish whether a player is available or absent.") +
+            (mentionsBothTeams
+                ? " Both teams appear in the headline, but the exact fixture and player status still need verification."
+                : " This is team-background news, not confirmation of availability for the requested fixture.");
         // A manager quote is useful only when it discusses player availability,
         // fitness, selection, or suspension. Generic post-match comments must not
         // be presented as absentee evidence just because a team name appears.
@@ -1442,7 +1448,7 @@ app.get("/api/match-intelligence/news", async (req, res) => {
             title: title.slice(0, 300),
             source: source.slice(0, 120) || "Source not identified",
             publishedAt: validDate ? validDate.toISOString() : null,
-            ageDays: ageMs === null ? null : Math.max(0, Math.floor(ageMs / (24 * 60 * 60 * 1000))),
+            ageDays: ageMs === null ? null : Math.floor(ageMs / (24 * 60 * 60 * 1000)),
             freshness: ageMs === null ? "date_unknown" : ageMs < 0 ? "future_date_check" : ageMs <= 7 * 24 * 60 * 60 * 1000 ? "fresh_7d" : ageMs <= maxAgeMs ? "recent_30d" : "stale",
             snippet: description,
             url: /^https?:\/\//i.test(link) ? link : null,
@@ -1450,6 +1456,7 @@ app.get("/api/match-intelligence/news", async (req, res) => {
             certainty: classification.certainty,
             availabilityAssessment,
             availabilityGuidance,
+            availabilityScope,
             hasRelevantAvailabilitySignal,
             fixtureRelevance,
             relevanceScore,
