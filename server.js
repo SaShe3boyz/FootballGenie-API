@@ -1291,13 +1291,17 @@ app.get("/api/match-intelligence/news", async (req, res) => {
     // Keep Bing's query plain: homeSearchNames/awaySearchNames already contain
     // quoted aliases joined by OR, so wrapping them again creates malformed nested quotes.
     const bingQuery = '"' + homeTeam + '" "' + awayTeam + '" football injury team news';
-    const bingUrl = "https://www.bing.com/news/search?q=" + encodeURIComponent(bingQuery) + "&format=rss";
+    const bingHomeQuery = '"' + homeTeam + '" football injury news team news';
+    const bingAwayQuery = '"' + awayTeam + '" football injury news team news';
+    const bingUrl = query => "https://www.bing.com/news/search?q=" + encodeURIComponent(query) + "&format=rss";
     const providers = [
         { name: "Google News RSS - fixture", url: googleUrl, timeoutMs: 6500 },
         { name: "Google News RSS - home team", url: teamGoogleUrl(homeTeamQuery), timeoutMs: 6500, searchTeam: homeTeam },
         { name: "Google News RSS - away team", url: teamGoogleUrl(awayTeamQuery), timeoutMs: 6500, searchTeam: awayTeam },
         // Bing News RSS provides original publisher URLs via an encoded apiclick link.
-        { name: "Bing News RSS", url: bingUrl, timeoutMs: 6500 },
+        { name: "Bing News RSS", url: bingUrl(bingQuery), timeoutMs: 6500 },
+        { name: "Bing News RSS - home team", url: bingUrl(bingHomeQuery), timeoutMs: 6500, searchTeam: homeTeam },
+        { name: "Bing News RSS - away team", url: bingUrl(bingAwayQuery), timeoutMs: 6500, searchTeam: awayTeam },
         // GDELT returns original publisher URLs, avoiding Google News wrapper resolution
         // and providing an independent fallback when Google News pages are rate-limited.
         { name: "GDELT News Search", url: gdeltUrl, timeoutMs: 4500, format: "json" },
@@ -1330,7 +1334,7 @@ app.get("/api/match-intelligence/news", async (req, res) => {
             }
             const responseBody = await response.text();
             let candidateXml = responseBody;
-            if (provider.name === "Bing News RSS") {
+            if (provider.name.startsWith("Bing News RSS")) {
                 // Unwrap Bing's tracking URL to the actual publisher article before parsing.
                 candidateXml = candidateXml.replace(/<link>([\s\S]*?)<\/link>/gi, (whole, rawLink) => {
                     const decodedLink = decodeNewsXml(rawLink.trim());
@@ -1378,7 +1382,7 @@ app.get("/api/match-intelligence/news", async (req, res) => {
             }
             // Bing News may return namespaced <News:News> records instead of RSS <item> elements.
             // Normalize those records into ordinary RSS items before the shared filters run.
-            if (provider.name === "Bing News RSS" && !/<(?:[A-Za-z0-9_.-]+:)?item\b/i.test(candidateXml)) {
+            if (provider.name.startsWith("Bing News RSS") && !/<(?:[A-Za-z0-9_.-]+:)?item\b/i.test(candidateXml)) {
                 const records = [...candidateXml.matchAll(/<(?:[A-Za-z0-9_.-]+:)?News(?:\s[^>]*)?>([\s\S]*?)<\/(?:[A-Za-z0-9_.-]+:)?News>/gi)];
                 const escapeFeedXml = value => String(value || "").replace(/&/g, "&amp;").replace(/</g, "&lt;")
                     .replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&apos;");
@@ -1447,7 +1451,7 @@ app.get("/api/match-intelligence/news", async (req, res) => {
     if (successfulProviders.length) {
         const feedItems = successfulProviders.flatMap(result => {
             const matches = [...result.xml.matchAll(/<(?:[A-Za-z0-9_.-]+:)?item(?:\s[^>]*)?>([\s\S]*?)<\/(?:[A-Za-z0-9_.-]+:)?item>/gi)]
-                .slice(0, result.provider === "Bing News RSS" ? 20 : 15);
+                .slice(0, result.provider.startsWith("Bing News RSS") ? 10 : 12);
             return matches.map(match => {
                 const source = result.provider.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
                 const searchTeamTag = result.searchTeam
@@ -1645,7 +1649,7 @@ app.get("/api/match-intelligence/news", async (req, res) => {
     const normalizeHeadlineForLinkMatch = value => String(value || "").toLowerCase()
         .replace(/[^a-z0-9]+/g, " ").trim().split(/\s+/).filter(token => token.length > 2);
     const bingPublisherCandidates = parsedItems.filter(item => {
-        if (item.searchProvider !== "Bing News RSS" || !item.url) return false;
+        if (!item.searchProvider || !item.searchProvider.startsWith("Bing News RSS") || !item.url) return false;
         try {
             const host = new URL(item.url).hostname.toLowerCase();
             return host !== "bing.com" && !host.endsWith(".bing.com") &&
