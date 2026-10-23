@@ -1377,6 +1377,9 @@ app.get("/api/match-intelligence/analyze", async (req, res) => {
         const newsUrl = new URL("/api/match-intelligence/news", req.protocol + "://" + req.get("host"));
         newsUrl.searchParams.set("homeTeam", homeTeam);
         newsUrl.searchParams.set("awayTeam", awayTeam);
+        // Match analysis should use a fresh news lookup by default; callers may explicitly opt out with forceRefresh=false.
+        const forceRefreshNews = !/^(0|false|no)$/i.test(String(req.query.forceRefresh || "true"));
+        if (forceRefreshNews) newsUrl.searchParams.set("forceRefresh", "true");
         const newsResponse = await fetch(newsUrl, {
             headers: { "Accept": "application/json" },
             signal: AbortSignal.timeout(15000)
@@ -1465,6 +1468,9 @@ app.get("/api/match-intelligence/prediction-review", async (req, res) => {
         const newsUrl = new URL("/api/match-intelligence/news", req.protocol + "://" + req.get("host"));
         newsUrl.searchParams.set("homeTeam", homeTeam);
         newsUrl.searchParams.set("awayTeam", awayTeam);
+        // Match analysis should use a fresh news lookup by default; callers may explicitly opt out with forceRefresh=false.
+        const forceRefreshNews = !/^(0|false|no)$/i.test(String(req.query.forceRefresh || "true"));
+        if (forceRefreshNews) newsUrl.searchParams.set("forceRefresh", "true");
         const newsResponse = await fetch(newsUrl, {
             headers: { "Accept": "application/json" },
             signal: AbortSignal.timeout(15000)
