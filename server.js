@@ -1691,9 +1691,12 @@ app.get("/api/match-intelligence/news", async (req, res) => {
         // valuable even when the headline says only "injury update" and does not
         // repeat the club name or an explicit OUT/DOUBTFUL label. Keep them so the
         // absentee route can open the original page and inspect its actual text.
+        const officialAvailabilityLanguage = /\b(injury|injured|injuries|fitness|team news|availability|unavailable|suspension|suspended|ruled out|doubtful|returns? to training|back in training)\b/i
+            .test(item.title + " " + item.snippet);
         const directOfficialTeamResult = isDirectOfficialClubUrlForDiscovery(item.url) &&
             item.searchTeam && [homeTeam, awayTeam].some(name =>
-                normalizeTeamName(name) === normalizeTeamName(item.searchTeam));
+                normalizeTeamName(name) === normalizeTeamName(item.searchTeam)) &&
+            (item.hasRelevantAvailabilitySignal || officialAvailabilityLanguage);
         if (directOfficialTeamResult) return true;
         if (item.relevanceScore < 3) { filterDiagnostics.lowRelevance++; return false; }
         if (!item.hasTargetTeamAsSubject) { filterDiagnostics.noTargetTeamInTitle++; return false; }
@@ -2212,12 +2215,13 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
         const namedAvailabilityPattern = /((?:[A-Z][A-Za-z'’.-]{2,}(?:\s+[A-Z][A-Za-z'’.-]{1,}){0,2})(?:\s+(?:and|&)\s+[A-Z][A-Za-z'’.-]{2,}(?:\s+[A-Z][A-Za-z'’.-]{1,}){0,1})?)\s+(?:(?:is|has been|will be)\s+)?(ruled out|out\b|injured\b|sidelined\b|set to miss|will miss|to miss|a doubt\b|doubts?\b|doubtful\b|faces? .*? injury|suffers? .*? injury|suffers? .*? knock|fit\b|available\b|back in training|returns? to training|returns? to the squad|available for selection)/gi;
         candidateReports = articles.flatMap(evidence => {
             const title = String(evidence.title || "");
+            const availabilityText = title + " " + String(evidence.snippet || "");
             const subjectMarker = /\b(?:vs?\.?|versus|against|ahead of|before|after|following|trip to|clash with|meeting with|showdown with|tie with|game against|match against|game with|match with)\b/i;
             const subjectEnd = title.search(subjectMarker);
             const articleSubject = (subjectEnd >= 0 ? title.slice(0, subjectEnd) : title).trim();
             const subjectTeams = [homeTeam, awayTeam].filter(name => textMentionsFootballTeam(articleSubject, name));
             const teamFromSubject = subjectTeams.length === 1 ? subjectTeams[0] : null;
-            const matches = [...title.matchAll(namedAvailabilityPattern)];
+            const matches = [...availabilityText.matchAll(namedAvailabilityPattern)];
             return matches.flatMap(match => {
                 const namesText = String(match[1] || "").trim();
                 const phrase = String(match[2] || "").toLowerCase();
