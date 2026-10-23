@@ -1741,7 +1741,9 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
                 const players = namesText.split(/\s+(?:and|&)\s+/i).map(name => name.trim()).filter(Boolean);
                 // Avoid treating team labels or generic editorial phrases as players.
                 return players.flatMap(player => {
-                    if (!player || /^(?:man city|manchester city|aston villa|team news|injury news|latest|confirmed|predicted|lineup|line-up)$/i.test(player)) return [];
+                    // Headlines also use capitalized medical terms immediately before "doubt"
+                    // (e.g. "Back Doubt", "Calf Doubt", "injury doubts"). These are not player names.
+                    if (!player || /^(?:man city|manchester city|aston villa|team news|injury news|injury|injuries|back|calf|hamstring|knee|ankle|muscle|fitness|latest|confirmed|predicted|lineup|line-up|return|doubt|doubts|update|updates|status|test|training|available|unavailable)$/i.test(player)) return [];
                     const team = teamFromSubject || (evidence.searchTeam &&
                         [homeTeam, awayTeam].find(name => normalizeTeamName(name) === normalizeTeamName(evidence.searchTeam)));
                     if (!team) return [];
