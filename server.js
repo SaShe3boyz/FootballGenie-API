@@ -1321,6 +1321,75 @@ async function sendGroqFallback(res, systemInstruction, userContent, evidence) {
 
 // Evidence-grounded conversational analysis. Provider keys stay on the server.
 // Groq is primary; OpenAI is an optional fallback if Groq is unavailable.
+
+app.post("/api/match-intelligence/analyze", async (req, res) => {
+    const homeTeam = String(req.body && req.body.homeTeam || "").trim().slice(0, 100);
+    const awayTeam = String(req.body && req.body.awayTeam || "").trim().slice(0, 100);
+    if (!homeTeam || !awayTeam || homeTeam.length < 2 || awayTeam.length < 2 ||
+        homeTeam.toLowerCase() === awayTeam.toLowerCase()) {
+        return res.status(400).json({ error: "Provide two different team names using homeTeam and awayTeam." });
+    }
+    if (!process.env.GROQ_API_KEY) {
+        return res.status(503).json({ status: "ai_not_configured", error: "Groq AI is not configured on the server." });
+    }
+    try {
+        const newsUrl = new URL("/api/match-intelligence/news", req.protocol + "://" + req.get("host"));
+        newsUrl.searchParams.set("homeTeam", homeTeam);
+        newsUrl.searchParams.set("awayTeam", awayTeam);
+        const newsResponse = await fetch(newsUrl, {
+            headers: { "Accept": "application/json" },
+            signal: AbortSignal.timeout(15000)
+        });
+        const newsData = await newsResponse.json().catch(() => ({}));
+        if (!newsResponse.ok) {
+            return res.status(502).json({
+                status: "news_unavailable",
+                error: "The news search could not be completed, so no evidence-based report was generated."
+            });
+        }
+        const articles = (Array.isArray(newsData.articles) ? newsData.articles : []).slice(0, 12).map(article => ({
+            title: String(article.title || "").slice(0, 300),
+            source: String(article.source || "").slice(0, 120),
+            publishedAt: article.publishedAt || null,
+            freshness: article.freshness || "date_unknown",
+            categories: Array.isArray(article.categories) ? article.categories : [],
+            certainty: article.certainty || "not_established",
+            fixtureRelevance: article.fixtureRelevance || "not_classified",
+            snippet: String(article.snippet || "").slice(0, 500),
+            url: article.url || null
+        }));
+        const systemInstruction = "You are Football Genie Match Intelligence, an evidence-grounded football news analyst. Use ONLY the supplied articles. Never invent player names, injuries, suspensions, lineups, quotes, dates, or sources. Distinguish source claims from verified facts. 'reported_as_confirmed_check_original_source' is a text-based signal, not independent verification. Clearly label predictions, rumours, and uncertain reports. Prioritise direct_fixture articles; treat team_background_news as possible context and other-fixture reports cautiously. If there are no relevant articles, say that no relevant reports were found and explicitly say this does NOT mean the squad is fully fit. Include source names, publication dates when available, and clickable article URLs for every material claim. Explain possible relevance to the match without assigning unsupported numerical probability changes. End with a short confidence note and what should be verified before kickoff. Do not give betting guarantees. Keep the report clear and mobile-friendly.";
+        const userContent = "Requested fixture: " + homeTeam + " vs " + awayTeam +
+            "\nSearch status: " + String(newsData.status || "unknown") +
+            "\nSearch time: " + String(newsData.searchedAt || "unknown") +
+            "\nEvidence articles (unverified search leads):\n" + JSON.stringify(articles);
+        const result = await requestGroqAnswer(systemInstruction, userContent);
+        void logSystemEvent("match_intelligence_report_created", "success", "News intelligence report generated.", {
+            homeTeam, awayTeam, articleCount: articles.length, provider: "groq", model: result.model
+        });
+        return res.json({
+            status: "analysis_complete",
+            fixture: { home: homeTeam, away: awayTeam },
+            provider: "groq",
+            model: result.model,
+            searchedAt: newsData.searchedAt || null,
+            articleCount: articles.length,
+            evidence: articles,
+            report: result.answer,
+            importantNotice: "This AI report summarises news search leads; it does not independently verify availability. Open sources and confirm updates close to kickoff. No articles found does not mean there are no injuries."
+        });
+    } catch (error) {
+        console.error("Match intelligence analysis failed:", error.message);
+        void logSystemEvent("match_intelligence_report_failed", "warning", "News intelligence analysis failed.", {
+            error: String(error.message || "unknown").slice(0, 180)
+        });
+        return res.status(502).json({
+            status: "analysis_failed",
+            error: "Football Genie could not complete the news analysis right now. Please try again later."
+        });
+    }
+});
+
 app.post("/api/ai/analyze", async (req, res) => {
     const prompt = String(req.body && req.body.question || "").trim();
     const context = req.body && req.body.match && typeof req.body.match === "object"
