@@ -1147,7 +1147,7 @@ function decodeNewsXml(value) {
 }
 
 function newsXmlTag(block, tag) {
-    const match = block.match(new RegExp("<" + tag + "(?:\\s[^>]*)?>([\\s\\S]*?)<\\/" + tag + ">", "i"));
+    const match = block.match(new RegExp("<" + tag + "(?:\s[^>]*)?>([\s\S]*?)<\/" + tag + ">", "i"));
     return match ? decodeNewsXml(match[1]) : "";
 }
 
@@ -1288,17 +1288,17 @@ app.get("/api/match-intelligence/news", async (req, res) => {
             }
             // Some publishers return feeds without the expected root wrapper; accept a
             // recognizable RSS item or Atom entry, but reject HTML error/consent pages.
-            const hasRssItems = /<item(?:\\s[^>]*)?>[\\s\\S]*?<\\/item>/i.test(candidateXml);
-            const hasAtomEntries = /<entry(?:\\s[^>]*)?>[\\s\\S]*?<\\/entry>/i.test(candidateXml);
-            const looksLikeFeed = (/<rss[\\s>]/i.test(candidateXml) && hasRssItems) ||
-                (/<feed[\\s>]/i.test(candidateXml) && hasAtomEntries) ||
+            const hasRssItems = /<item(?:\s[^>]*)?>[\s\S]*?<\/item>/i.test(candidateXml);
+            const hasAtomEntries = /<entry(?:\s[^>]*)?>[\s\S]*?<\/entry>/i.test(candidateXml);
+            const looksLikeFeed = (/<rss[\s>]/i.test(candidateXml) && hasRssItems) ||
+                (/<feed[\s>]/i.test(candidateXml) && hasAtomEntries) ||
                 hasRssItems || hasAtomEntries;
             if (!looksLikeFeed) {
                 providerErrors.push({
                     provider: provider.name,
                     error: "unexpected_feed_format",
                     contentType,
-                    bodyPreview: responseBody.replace(/\\s+/g, " ").slice(0, 140)
+                    bodyPreview: responseBody.replace(/\s+/g, " ").slice(0, 140)
                 });
                 continue;
             }
@@ -1919,7 +1919,7 @@ app.post("/api/ai/analyze", async (req, res) => {
                 const articles = selectedArticles.map((article, index) => {
                     const source = String(article.source || "").slice(0, 100);
                     const sourceText = (source + " " + String(article.url || "")).toLowerCase();
-                    const officialSource = /(^|[.\\s])chelsea fc|arsenal\\.com|chelseafc\\.com|mancity\\.com|manutd\\.com|liverpoolfc\\.com|tottenhamhotspur\\.com|avfc\\.co\\.uk|evertonfc\\.com|premierleague\\.com|thefa\\.com|uefa\\.com|fifa\\.com/.test(sourceText);
+                    const officialSource = /(^|[.\s])chelsea fc|arsenal\\.com|chelseafc\\.com|mancity\\.com|manutd\\.com|liverpoolfc\\.com|tottenhamhotspur\\.com|avfc\\.co\\.uk|evertonfc\\.com|premierleague\\.com|thefa\\.com|uefa\\.com|fifa\\.com/.test(sourceText);
                     return {
                         evidenceId: "N" + (index + 1),
                         title: String(article.title || "").slice(0, 250),
