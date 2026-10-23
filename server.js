@@ -1952,7 +1952,7 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
             officialClubSource: article.officialClubSource === true,
             sourceTrustTier: article.sourceTrustTier || (article.officialClubSource === true ? "official_club_website" : "secondary_publication"),
             publishedAt: article.publishedAt || null,
-            snippet: String(article.snippet || "").slice(0, 500),
+            snippet: String(article.snippet || "").slice(0, 5000),
             url: article.url || null,
             categories: Array.isArray(article.categories) ? article.categories : [],
             availabilityAssessment: article.availabilityAssessment || "availability_not_established",
@@ -2361,8 +2361,11 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
                     const subjectEnd = evidence.title.search(subjectMarker);
                     const articleSubject = (subjectEnd >= 0 ? evidence.title.slice(0, subjectEnd) : evidence.title).toLowerCase();
                     // Do not assign a player to a team mentioned only as the opponent or in a different fixture.
+                    const articleSubjectNamesTeam = articleSubject.includes(team.toLowerCase());
+                    const officialSearchContextMatchesTeam = evidence.searchTeam &&
+                        normalizeTeamName(evidence.searchTeam) === normalizeTeamName(team);
                     if (!evidenceText.toLowerCase().includes(player.toLowerCase()) ||
-                        !articleSubject.includes(team.toLowerCase())) return [];
+                        (!articleSubjectNamesTeam && !officialSearchContextMatchesTeam)) return [];
                     // Status comes from deterministic wording checks, not AI inference.
                     const reportedStatus = evidence.availabilityAssessment === "reported_unavailable_check_original_source"
                         ? "reported_unavailable"
