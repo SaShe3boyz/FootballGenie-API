@@ -1399,14 +1399,13 @@ app.get("/api/match-intelligence/news", async (req, res) => {
         const mentionsHome = lowerTitle.includes(homeTeam.toLowerCase());
         const mentionsAway = lowerTitle.includes(awayTeam.toLowerCase());
         const mentionsBothTeams = mentionsHome && mentionsAway;
-        const opponentMatch = title.match(/\b(?:vs?\.?|versus|against)\s+([A-Z][A-Za-z.'’-]*(?:\s+[A-Z][A-Za-z.'’-]*){0,2})/);
-        const namedOpponent = opponentMatch ? opponentMatch[1].trim() : "";
+        const opponentPattern = /\\b(?:vs?\\.?|versus|against|ahead of|before|trip to|clash with|meeting with|showdown with|tie with|game against|match against|game with|match with)\\s+([A-Z][A-Za-z.\\u0027’&-]*(?:\\s+[A-Z][A-Za-z.\\u0027’&-]*){0,2})/g;
+        const namedOpponents = [...title.matchAll(opponentPattern)].map(match => match[1].trim());
         const targetNames = [homeTeam, awayTeam].map(name => name.toLowerCase());
-        const conflictingFixtureOpponent = Boolean(namedOpponent) &&
-            !targetNames.some(name => name === namedOpponent.toLowerCase() ||
-                name.startsWith(namedOpponent.toLowerCase()) || namedOpponent.toLowerCase().startsWith(name));
-        const mentionsFixtureOpponent = Boolean(namedOpponent) ||
-            /\bagainst\s+[A-Z][A-Za-z.'’-]*/i.test(title);
+        const isTargetTeamName = name => targetNames.some(target => target === name.toLowerCase() ||
+            target.startsWith(name.toLowerCase()) || name.toLowerCase().startsWith(target));
+        const conflictingFixtureOpponent = namedOpponents.some(name => !isTargetTeamName(name));
+        const mentionsFixtureOpponent = namedOpponents.length > 0;
         const fixtureRelevance = mentionsBothTeams
             ? "direct_fixture"
             : (conflictingFixtureOpponent ? "other_fixture_excluded_from_analysis"
