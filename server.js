@@ -2054,13 +2054,18 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
                     if (firstLine) rpcText = firstLine;
                     let rpcRows = [];
                     try { rpcRows = JSON.parse(rpcText); } catch (_) {}
+                    let fallbackResponseIndex = 0;
                     for (const row of rpcRows) {
-                        if (!Array.isArray(row) || row.length < 7 || row[0] !== "wrb.fr" || row[1] !== "Fbv4je") continue;
+                        if (!Array.isArray(row) || row[0] !== "wrb.fr" || row[1] !== "Fbv4je") continue;
                         try {
                             const payload = JSON.parse(row[2]);
-                            const sequence = row[6];
                             const destination = Array.isArray(payload) && payload[0] === "garturlres" ? payload[1] : null;
-                            const item = validSignatures.find((candidate, index) => "g" + index === sequence);
+                            // Google may return a generic response label instead of the request
+                            // tag (g0, g1...). In that case, batchexecute preserves entry order.
+                            const sequence = row[6];
+                            const taggedItem = validSignatures.find((candidate, index) => "g" + index === sequence);
+                            const item = taggedItem || validSignatures[fallbackResponseIndex];
+                            fallbackResponseIndex += 1;
                             if (item && typeof destination === "string" && /^https?:\/\//i.test(destination)) {
                                 const destinationHost = new URL(destination).hostname.toLowerCase();
                                 if (destinationHost !== "news.google.com" && !destinationHost.endsWith(".news.google.com")) {
