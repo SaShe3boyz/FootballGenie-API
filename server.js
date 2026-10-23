@@ -2110,8 +2110,11 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
         // Secondary-publication leads require independent corroboration for the same
         // player, requested team and availability status. Official club-domain evidence
         // can stand alone as a primary-source lead, but is not treated as content-verified.
-        const isOfficialEvidenceReport = report => report.officialPublisherDomainMatch === true ||
-            report.sourceTrustTier === "official_club_website";
+        const isOfficialEvidenceReport = report => {
+            if (report.officialPublisherDomainMatch === true || report.sourceTrustTier === "official_club_website") return true;
+            const evidence = articles.find(item => item.evidenceId === report.evidenceId);
+            return !!(evidence && evidence.officialClubSource === true);
+        };
         const normalizedPlayerText = value => normalizeTeamName(String(value || "").replace(/[^A-Za-z0-9'’ -]/g, " "));
         const hasIndependentCorroboration = report => {
             const playerKey = normalizedPlayerText(report.player);
