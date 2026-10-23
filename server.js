@@ -1413,6 +1413,16 @@ async function sendGroqFallback(res, systemInstruction, userContent, evidence) {
     }
 }
 
+// Safe in-memory diagnostic for the most recent match-intelligence failure.
+// Deliberately excludes provider messages, credentials, and request contents.
+let lastMatchAnalysisFailure = null;
+app.get("/api/match-intelligence/diagnostics", (req, res) => {
+    if (!lastMatchAnalysisFailure) {
+        return res.json({ status: "no_recent_failure", checkedAt: new Date().toISOString() });
+    }
+    return res.json({ ...lastMatchAnalysisFailure, checkedAt: new Date().toISOString() });
+});
+
 // Evidence-grounded conversational analysis. Provider keys stay on the server.
 // Groq is primary; OpenAI is an optional fallback if Groq is unavailable.
 
@@ -1504,6 +1514,18 @@ app.get("/api/match-intelligence/analyze", async (req, res) => {
         const providerRateLimited = /Groq HTTP 429|rate.?limit|too many requests/i.test(diagnostic);
         const providerUnavailable = /Groq HTTP 5\d\d|timeout|timed out|abort/i.test(diagnostic);
         console.error("Match intelligence analysis failed at " + failureStage + ":", diagnostic);
+        const groqStatusMatch = diagnostic.match(/Groq HTTP (\d{3})/);
+        lastMatchAnalysisFailure = {
+            status: providerRateLimited ? "provider_rate_limited" :
+                providerUnavailable ? "provider_unavailable" : "analysis_failed",
+            stage: failureStage,
+            providerHttpStatus: groqStatusMatch ? Number(groqStatusMatch[1]) : null,
+            errorType: /timeout|timed out|abort/i.test(diagnostic) ? "timeout" :
+                /Groq HTTP 401|Groq HTTP 403/i.test(diagnostic) ? "provider_authentication" :
+                /Groq HTTP 429|rate.?limit|too many requests/i.test(diagnostic) ? "provider_rate_limit" :
+                /Groq HTTP 5\d\d/i.test(diagnostic) ? "provider_server_error" :
+                failureStage === "news_fetch" ? "news_fetch_failure" : "other"
+        };
         void logSystemEvent("match_intelligence_report_failed", "warning", "News intelligence analysis failed.", {
             stage: failureStage,
             providerRateLimited,
