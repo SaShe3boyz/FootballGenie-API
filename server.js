@@ -1685,10 +1685,11 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
             });
         }
 
-        const articles = (Array.isArray(newsData.articles) ? newsData.articles : []).slice(0, 12).map((article, index) => ({
+        const articles = (Array.isArray(newsData.articles) ? newsData.articles : []).slice(0, 30).map((article, index) => ({
             evidenceId: "E" + (index + 1),
             title: String(article.title || "").slice(0, 300),
             source: String(article.source || "").slice(0, 120),
+            searchTeam: String(article.searchTeam || "").slice(0, 100) || null,
             publishedAt: article.publishedAt || null,
             snippet: String(article.snippet || "").slice(0, 500),
             url: article.url || null,
@@ -1717,7 +1718,9 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
             if (!match) return [];
             const player = match[1].trim();
             const evidenceText = [evidence.title, evidence.snippet, evidence.source].filter(Boolean).join(" ");
-            const team = [homeTeam, awayTeam].find(name => textMentionsFootballTeam(evidenceText, name));
+            const team = [homeTeam, awayTeam].find(name => textMentionsFootballTeam(evidenceText, name)) ||
+                [homeTeam, awayTeam].find(name => evidence.searchTeam &&
+                    normalizeTeamName(name) === normalizeTeamName(evidence.searchTeam));
             if (!team) return [];
             return [{
                 player, team, reportedStatus: status,
