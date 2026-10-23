@@ -1841,7 +1841,9 @@ app.post("/api/ai/analyze", async (req, res) => {
             newsUrl.searchParams.set("awayTeam", away);
             // The RSS route itself can take up to 12 seconds. Give it enough time to
             // finish; the old 9-second outer timeout could abort before evidence arrived.
-            newsUrl.searchParams.set("forceRefresh", "true");
+            // Respect the news endpoint cache during AI follow-up questions. Forcing a fresh
+            // RSS search on every absentee question can trigger provider rate limits.
+            // A manual request may still use forceRefresh=true when a fresh fetch is genuinely needed.
             const newsResponse = await fetch(newsUrl, {
                 headers: { "Accept": "application/json" },
                 signal: AbortSignal.timeout(15000)
