@@ -1481,7 +1481,10 @@ app.get("/api/match-intelligence/analyze", async (req, res) => {
             "\nSearch time: " + String(newsData.searchedAt || "unknown") +
             "\nEvidence articles (unverified search leads; use article indexes and quote exact titles/snippets when naming players):\n" + JSON.stringify(articles);
         failureStage = "groq_analysis";
-        const result = await requestGroqAnswer(systemInstruction, userContent, { maxTokens: 1000, timeoutMs: 9000, maxAttempts: 2 });
+        const result = await requestGroqAnswer(systemInstruction, userContent, {
+            // Evidence-grounded reports need more time than a short chat response.
+            maxTokens: 900, timeoutMs: 25000, maxAttempts: 2
+        });
         void logSystemEvent("match_intelligence_report_created", "success", "News intelligence report generated.", {
             homeTeam, awayTeam, articleCount: articles.length, provider: "groq", model: result.model
         });
