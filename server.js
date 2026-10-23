@@ -1216,16 +1216,25 @@ app.get("/api/match-intelligence/news", async (req, res) => {
             const mentionsBothTeams = mentionsHome && mentionsAway;
             // Headlines about another fixture can still contain useful injury news,
             // but should rank below reports clearly about the requested match.
-            const mentionsFixtureOpponent = /\b(vs?\.?|versus|against|at)\s+[A-Z][A-Za-z.'’-]*/i.test(title);
+            const opponentMatch = title.match(/\b(?:vs?\.?|versus|against)\s+([A-Z][A-Za-z.'’-]*(?:\s+[A-Z][A-Za-z.'’-]*){0,2})/);
+            const namedOpponent = opponentMatch ? opponentMatch[1].trim() : "";
+            const targetNames = [homeTeam, awayTeam].map(name => name.toLowerCase());
+            const conflictingFixtureOpponent = Boolean(namedOpponent) &&
+                !targetNames.some(name => name === namedOpponent.toLowerCase() ||
+                    name.startsWith(namedOpponent.toLowerCase()) || namedOpponent.toLowerCase().startsWith(name));
+            const mentionsFixtureOpponent = Boolean(namedOpponent) ||
+                /\bagainst\s+[A-Z][A-Za-z.'’-]*/i.test(title);
             const fixtureRelevance = mentionsBothTeams
                 ? "direct_fixture"
-                : (mentionsFixtureOpponent ? "team_news_other_fixture_or_opponent_context" : "team_background_news");
+                : (conflictingFixtureOpponent ? "other_fixture_excluded_from_analysis"
+                    : (mentionsFixtureOpponent ? "team_news_other_fixture_or_opponent_context" : "team_background_news"));
             const womenContext = (title + " " + description + " " + source).toLowerCase();
             const isWomensStory = /\b(women|women's|wsl|ladies|female team|women's super league|women's champions league)\b/i.test(womenContext);
             const classification = classifyFootballNews(title, description);
             let relevanceScore = (mentionsHome ? 2 : 0) + (mentionsAway ? 2 : 0);
             if (mentionsBothTeams) relevanceScore += 4;
             if (mentionsFixtureOpponent && !mentionsBothTeams) relevanceScore -= 2;
+            if (conflictingFixtureOpponent && !mentionsBothTeams) relevanceScore -= 8;
             if (classification.categories.some(category => ["injury", "suspension", "lineup", "manager_comment"].includes(category))) relevanceScore += 2;
             if (classification.categories.includes("unconfirmed_report")) relevanceScore += 1;
             if (/official|confirmed|press conference|team news|injury update|suspended/.test(lowerTitle)) relevanceScore += 1;
@@ -1247,6 +1256,7 @@ app.get("/api/match-intelligence/news", async (req, res) => {
         }).filter(item => item.title && item.url && !item.isWomensStory &&
             (item.ageDays === null || item.ageDays <= FOOTBALL_NEWS_MAX_AGE_DAYS) &&
             item.relevanceScore >= 3 &&
+            item.fixtureRelevance !== "other_fixture_excluded_from_analysis" &&
             (item.title.toLowerCase().includes(homeTeam.toLowerCase()) || item.title.toLowerCase().includes(awayTeam.toLowerCase())) &&
             item.categories.some(category => ["injury", "suspension", "lineup", "manager_comment"].includes(category)));
 
@@ -1261,7 +1271,7 @@ app.get("/api/match-intelligence/news", async (req, res) => {
             maxArticleAgeDays: FOOTBALL_NEWS_MAX_AGE_DAYS,
             count: items.length,
             articles: items,
-            importantNotice: "News items are search leads, not verified player-availability records. Freshness is based on the RSS publication date. Open the original source and verify the exact fixture, player, team, and availability before changing a prediction. 'Confirmed' is a wording signal, not independent verification. No results does not mean there are no injuries."
+            importantNotice: "News items are search leads, not verified player-availability records. Headlines that clearly name a different opponent are excluded from the analysis feed to reduce cross-fixture contamination. This conservative filter may omit useful background reports. Freshness is based on the RSS publication date. Open the original source and verify the exact fixture, player, team, and availability before changing a prediction. 'Confirmed' is a wording signal, not independent verification. No results does not mean there are no injuries."
         };
         footballNewsCache.set(cacheKey, { expiresAt: Date.now() + FOOTBALL_NEWS_CACHE_TTL_MS, data: result });
         return res.json(result);
