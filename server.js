@@ -1888,7 +1888,16 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
             });
         }
 
-        const articles = (Array.isArray(newsData.articles) ? newsData.articles : []).slice(0, 30).map((article, index) => ({
+        // Absentee intelligence is official-club-source-only. Secondary publications may
+        // still be useful for general news discovery, but must never support player-availability
+        // claims or appear as absentee evidence in Football Genie.
+        const rawNewsArticles = Array.isArray(newsData.articles) ? newsData.articles : [];
+        const nonOfficialArticlesIgnored = rawNewsArticles.filter(article =>
+            article.officialClubSource !== true && article.sourceTrustTier !== "official_club_website"
+        ).length;
+        const articles = rawNewsArticles
+            .filter(article => article.officialClubSource === true || article.sourceTrustTier === "official_club_website")
+            .slice(0, 30).map((article, index) => ({
             evidenceId: "E" + (index + 1),
             title: String(article.title || "").slice(0, 300),
             source: String(article.source || "").slice(0, 120),
@@ -2107,13 +2116,13 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
             }
         }
 
-        // Secondary-publication leads require independent corroboration for the same
-        // player, requested team and availability status. Official club-domain evidence
-        // can stand alone as a primary-source lead, but is not treated as content-verified.
+        // Official club websites are the only accepted evidence for absentee reports.
+        // If a club has not published a relevant update, do not fill the gap with
+        // secondary publications or unverified AI inference.
         const isOfficialEvidenceReport = report => {
             if (report.officialPublisherDomainMatch === true || report.sourceTrustTier === "official_club_website") return true;
             const evidence = articles.find(item => item.evidenceId === report.evidenceId);
-            return !!(evidence && evidence.officialClubSource === true);
+            return !!(evidence && (evidence.officialClubSource === true || evidence.sourceTrustTier === "official_club_website"));
         };
         const normalizedPlayerText = value => normalizeTeamName(String(value || "").replace(/[^A-Za-z0-9'’ -]/g, " "));
         const hasIndependentCorroboration = report => {
@@ -2140,10 +2149,9 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
                         : false;
             });
         };
-        const reportCountBeforeCorroboration = candidateReports.length;
-        candidateReports = candidateReports.filter(report =>
-            isOfficialEvidenceReport(report) || hasIndependentCorroboration(report));
-        const uncorroboratedSecondaryReportsSuppressed = reportCountBeforeCorroboration - candidateReports.length;
+        const reportCountBeforeSourcePolicy = candidateReports.length;
+        candidateReports = candidateReports.filter(isOfficialEvidenceReport);
+        const nonOfficialReportsSuppressed = reportCountBeforeSourcePolicy - candidateReports.length;
 
         // Resolve Google News wrapper URLs to their publisher destination when possible.
         // A resolved destination is NOT proof that the article confirms player availability.
@@ -2330,8 +2338,9 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
             providerFeedDiagnostics: newsData.providerFeedDiagnostics || [],
             publisherLinkResolutionDiagnostics: newsData.publisherLinkResolutionDiagnostics || null,
             sourceAgreementDiagnostics: {
-                policy: "official_club_source_or_two_independent_secondary_publications",
-                secondaryReportsSuppressedForLackOfCorroboration: uncorroboratedSecondaryReportsSuppressed
+                policy: "official_club_websites_only",
+                nonOfficialArticlesIgnored,
+                nonOfficialReportsSuppressed
             },
             resolverDiagnostics,
             articleCount: articles.length,
@@ -2362,12 +2371,12 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
                 sourceLinkHidden: true
             })),
             sourcePolicy: {
-                primary: "official_club_websites",
-                secondary: "football_publications",
+                acceptedForAbsenteeClaims: "official_club_websites_only",
+                secondaryPublicationsUsedForAbsenteeClaims: false,
                 userFacingSource: "Football Genie",
                 outboundPublisherLinksShown: false
             },
-            importantNotice: "Football Genie prioritises official club information, with reputable football publications used as supporting leads. A headline or search result alone is not confirmation of current player availability. No prediction probabilities are changed by this endpoint."
+            importantNotice: "Football Genie uses official club website evidence only for player-availability reports. If no relevant official update is found, no absentee claim is made; secondary publications and unverified search leads are not used to fill the gap. Official articles still require relevance and date checks. No prediction probabilities are changed by this endpoint."
         };
         absenteeReportCache.set(cacheKey, { expiresAt: Date.now() + ABSENTEE_REPORT_CACHE_TTL_MS, data: publicResult });
         return res.json(publicResult);
