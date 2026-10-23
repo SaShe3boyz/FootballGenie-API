@@ -1411,7 +1411,7 @@ app.get("/api/match-intelligence/news", async (req, res) => {
         // A manager quote is useful only when it discusses player availability,
         // fitness, selection, or suspension. Generic post-match comments must not
         // be presented as absentee evidence just because a team name appears.
-        const managerAvailabilityContext = /\\b(available|unavailable|fit|fitness|miss|missing|return|returning|doubt|doubtful|assess|assessment|train|training|squad|selection|ruled out|late test|match fitness|ban|suspend|suspension)\\b/i.test(textForChecks);
+        const managerAvailabilityContext = /\b(available|unavailable|fit|fitness|miss|missing|return|returning|doubt|doubtful|assess|assessment|train|training|squad|selection|ruled out|late test|match fitness|ban|suspend|suspension)\b/i.test(textForChecks);
         const hasRelevantAvailabilitySignal =
             classification.categories.some(category => ["injury", "suspension", "lineup"].includes(category)) ||
             (classification.categories.includes("manager_comment") && managerAvailabilityContext);
