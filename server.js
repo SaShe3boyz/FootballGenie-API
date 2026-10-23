@@ -1264,6 +1264,16 @@ app.get("/api/match-intelligence/news", async (req, res) => {
             aliases: ["manchester city", "manchester city fc", "man city"],
             domain: "mancity.com/news/mens",
             name: "Official Manchester City website discovery"
+        },
+        {
+            aliases: ["rb leipzig", "rb leipzig fc", "rasenballsport leipzig", "rasenballsport leipzig e.v."],
+            domain: "rbleipzig.com",
+            name: "Official RB Leipzig website discovery"
+        },
+        {
+            aliases: ["borussia monchengladbach", "borussia mönchengladbach", "borussia m'gladbach", "monchengladbach", "mönchengladbach", "gladbach"],
+            domain: "borussia.com",
+            name: "Official Borussia Mönchengladbach website discovery"
         }
     ];
     const requestedTeams = [homeTeam, awayTeam];
@@ -1689,7 +1699,9 @@ app.get("/api/match-intelligence/news", async (req, res) => {
         try {
             const host = new URL(value || "").hostname.toLowerCase();
             return host === "avfc.co.uk" || host.endsWith(".avfc.co.uk") ||
-                host === "mancity.com" || host.endsWith(".mancity.com");
+                host === "mancity.com" || host.endsWith(".mancity.com") ||
+                host === "rbleipzig.com" || host.endsWith(".rbleipzig.com") ||
+                host === "borussia.com" || host.endsWith(".borussia.com");
         } catch (_) { return false; }
     };
     parsedItems = parsedItems.map(item => ({
