@@ -1147,10 +1147,11 @@ function decodeNewsXml(value) {
 }
 
 function newsXmlTag(block, tag) {
-    const match = block.match(new RegExp("<" + tag + "(?:\s[^>]*)?>([\s\S]*?)<\/" + tag + ">", "i"));
+    // RegExp is built from a string, so backslashes must be doubled here.
+    // The previous single-slash pattern silently failed to match normal XML tags.
+    const match = block.match(new RegExp("<" + tag + "(?:\\s[^>]*)?>([\\s\\S]*?)<\\/" + tag + ">", "i"));
     return match ? decodeNewsXml(match[1]) : "";
 }
-
 function classifyFootballNews(title, snippet) {
     const text = (String(title || "") + " " + String(snippet || "")).toLowerCase();
     const categories = [];
