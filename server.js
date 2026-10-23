@@ -1319,9 +1319,11 @@ app.get("/api/match-intelligence/news", async (req, res) => {
 });
 
 // Groq is the primary AI provider for Football Genie.
-async function requestGroqAnswer(systemInstruction, userContent) {
+async function requestGroqAnswer(systemInstruction, userContent, options = {}) {
     if (!process.env.GROQ_API_KEY) return null;
     const model = process.env.GROQ_MODEL || "openai/gpt-oss-120b";
+    const maxTokens = Number.isFinite(options.maxTokens) ? options.maxTokens : 3000;
+    const timeoutMs = Number.isFinite(options.timeoutMs) ? options.timeoutMs : 45000;
     const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
         method: "POST",
         headers: {
@@ -1331,13 +1333,13 @@ async function requestGroqAnswer(systemInstruction, userContent) {
         body: JSON.stringify({
             model,
             temperature: 0.2,
-            max_tokens: 3000,
+            max_tokens: maxTokens,
             messages: [
                 { role: "system", content: systemInstruction },
                 { role: "user", content: userContent }
             ]
         }),
-        signal: AbortSignal.timeout(45000)
+        signal: AbortSignal.timeout(timeoutMs)
     });
     const textBody = await response.text();
     let data;
@@ -1415,7 +1417,7 @@ app.get("/api/match-intelligence/analyze", async (req, res) => {
             "\nSearch time: " + String(newsData.searchedAt || "unknown") +
             "\nEvidence articles (unverified search leads; use article indexes and quote exact titles/snippets when naming players):\n" + JSON.stringify(articles);
         failureStage = "groq_analysis";
-        const result = await requestGroqAnswer(systemInstruction, userContent);
+        const result = await requestGroqAnswer(systemInstruction, userContent, { maxTokens: 1400, timeoutMs: 25000 });
         void logSystemEvent("match_intelligence_report_created", "success", "News intelligence report generated.", {
             homeTeam, awayTeam, articleCount: articles.length, provider: "groq", model: result.model
         });
