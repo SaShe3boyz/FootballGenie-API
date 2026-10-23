@@ -1292,8 +1292,8 @@ app.get("/api/match-intelligence/news", async (req, res) => {
                 }).join("");
                 candidateXml = "<rss><channel>" + itemsXml + "</channel></rss>";
             }
-            const hasRssItems = /<item(?:\s[^>]*)?>[\s\S]*?<\/item>/i.test(candidateXml);
-            const hasAtomEntries = /<entry(?:\s[^>]*)?>[\s\S]*?<\/entry>/i.test(candidateXml);
+            const hasRssItems = /<(?:[A-Za-z0-9_.-]+:)?item(?:\s[^>]*)?>[\s\S]*?<\/(?:[A-Za-z0-9_.-]+:)?item>/i.test(candidateXml);
+            const hasAtomEntries = /<(?:[A-Za-z0-9_.-]+:)?entry(?:\s[^>]*)?>[\s\S]*?<\/(?:[A-Za-z0-9_.-]+:)?entry>/i.test(candidateXml);
             const looksLikeFeed = (/<rss[\s>]/i.test(candidateXml) && hasRssItems) ||
                 (/<feed[\s>]/i.test(candidateXml) && hasAtomEntries) || hasRssItems || hasAtomEntries;
             if (!looksLikeFeed) {
@@ -1323,7 +1323,7 @@ app.get("/api/match-intelligence/news", async (req, res) => {
     const successfulProviders = providerResults.filter(result => result.xml);
     if (successfulProviders.length) {
         const feedItems = successfulProviders.flatMap(result => {
-            const matches = [...result.xml.matchAll(/<item(?:\s[^>]*)?>([\s\S]*?)<\/item>/gi)];
+            const matches = [...result.xml.matchAll(/<(?:[A-Za-z0-9_.-]+:)?item(?:\s[^>]*)?>([\s\S]*?)<\/(?:[A-Za-z0-9_.-]+:)?item>/gi)];
             return matches.map(match => {
                 const source = result.provider.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
                 return "<item>" + match[1] + "<source>" + source + "</source></item>";
@@ -1368,8 +1368,8 @@ app.get("/api/match-intelligence/news", async (req, res) => {
 
     const now = Date.now();
     const maxAgeMs = FOOTBALL_NEWS_MAX_AGE_DAYS * 24 * 60 * 60 * 1000;
-    const feedEntries = [...xml.matchAll(/<item(?:\s[^>]*)?>([\s\S]*?)<\/item>/gi)];
-    const atomEntries = feedEntries.length ? [] : [...xml.matchAll(/<entry(?:\s[^>]*)?>([\s\S]*?)<\/entry>/gi)];
+    const feedEntries = [...xml.matchAll(/<(?:[A-Za-z0-9_.-]+:)?item(?:\s[^>]*)?>([\s\S]*?)<\/(?:[A-Za-z0-9_.-]+:)?item>/gi)];
+    const atomEntries = feedEntries.length ? [] : [...xml.matchAll(/<(?:[A-Za-z0-9_.-]+:)?entry(?:\s[^>]*)?>([\s\S]*?)<\/(?:[A-Za-z0-9_.-]+:)?entry>/gi)];
     const parsedCandidates = [...(feedEntries.length ? feedEntries : atomEntries)].slice(0, 150).map(match => {
         const block = match[1];
         const title = newsXmlTag(block, "title");
