@@ -1972,6 +1972,7 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
                 }
             }))].slice(0, 8);
         const resolvedPublisherUrls = new Map();
+        const resolverDiagnostics = { googleNewsUrlCount: googleNewsUrls.length, pageFetchSuccessCount: 0, directRedirectCount: 0, signatureExtractedCount: 0, signatureMissingCount: 0, rpcAttempted: false, rpcHttpStatus: null, rpcResponseLength: 0, rpcRowsParsed: 0, rpcAcceptedRows: 0, publisherDestinationsExtracted: 0, resolvedPublisherUrlCount: 0 };
 
         // Google News no longer reliably redirects RSS article links to publishers.
         // Its current flow requires a per-article signature followed by one batched
@@ -1999,10 +2000,12 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
                 });
                 const html = await response.text();
                 if (!response.ok || !response.url) return null;
+                resolverDiagnostics.pageFetchSuccessCount += 1;
                 // Some Google News article links still redirect directly to the publisher.
                 // Capture that final URL instead of discarding it before signature parsing.
                 const finalHost = new URL(response.url).hostname.toLowerCase();
                 if (finalHost !== "news.google.com" && !finalHost.endsWith(".news.google.com")) {
+                    resolverDiagnostics.directRedirectCount += 1;
                     return { originalUrl, directDestination: response.url };
                 }
                 const signature = (html.match(/data-n-a-sg="([^"]+)"/) || [])[1];
@@ -2011,7 +2014,11 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
                 const marker = "/articles/";
                 const markerIndex = pathname.indexOf(marker);
                 const articleId = markerIndex >= 0 ? pathname.slice(markerIndex + marker.length) : "";
-                if (!signature || !timestamp || !articleId || !/^\d+$/.test(timestamp)) return null;
+                if (!signature || !timestamp || !articleId || !/^\d+$/.test(timestamp)) {
+                    resolverDiagnostics.signatureMissingCount += 1;
+                    return null;
+                }
+                resolverDiagnostics.signatureExtractedCount += 1;
                 return { originalUrl, articleId, signature, timestamp: Number(timestamp) };
             } catch (_) {
                 return null;
@@ -2023,12 +2030,14 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
                 const destinationHost = new URL(item.directDestination).hostname.toLowerCase();
                 if (destinationHost !== "news.google.com" && !destinationHost.endsWith(".news.google.com")) {
                     resolvedPublisherUrls.set(item.originalUrl, item.directDestination);
+                    resolverDiagnostics.publisherDestinationsExtracted += 1;
                 }
             } catch (_) {}
         }
         const validSignatures = signatureResults.filter(item => item && item.articleId && item.signature && Number.isFinite(item.timestamp));
         if (validSignatures.length) {
             try {
+                resolverDiagnostics.rpcAttempted = true;
                 const rpcEntries = validSignatures.map((item, index) => {
                     const inner = [
                         "garturlreq",
@@ -2056,15 +2065,19 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
                     body: rpcBody,
                     signal: AbortSignal.timeout(6000)
                 });
+                resolverDiagnostics.rpcHttpStatus = rpcResponse.status;
                 if (rpcResponse.ok) {
                     let rpcText = (await rpcResponse.text()).replace(/^\)\]\}'\n?/, "").trim();
+                    resolverDiagnostics.rpcResponseLength = rpcText.length;
                     const firstLine = rpcText.split("\n").find(line => line.trim().startsWith("["));
                     if (firstLine) rpcText = firstLine;
                     let rpcRows = [];
                     try { rpcRows = JSON.parse(rpcText); } catch (_) {}
+                    resolverDiagnostics.rpcRowsParsed = Array.isArray(rpcRows) ? rpcRows.length : 0;
                     let fallbackResponseIndex = 0;
                     for (const row of rpcRows) {
                         if (!Array.isArray(row) || row[0] !== "wrb.fr" || row[1] !== "Fbv4je") continue;
+                        resolverDiagnostics.rpcAcceptedRows += 1;
                         try {
                             const payload = JSON.parse(row[2]);
                             const destination = Array.isArray(payload) && payload[0] === "garturlres" ? payload[1] : null;
@@ -2078,6 +2091,7 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
                                 const destinationHost = new URL(destination).hostname.toLowerCase();
                                 if (destinationHost !== "news.google.com" && !destinationHost.endsWith(".news.google.com")) {
                                     resolvedPublisherUrls.set(item.originalUrl, destination);
+                                    resolverDiagnostics.publisherDestinationsExtracted += 1;
                                 }
                             }
                         } catch (_) {}
@@ -2087,6 +2101,7 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
                 // Google may rate-limit or change the RPC; preserve the original RSS URL.
             }
         }
+        resolverDiagnostics.resolvedPublisherUrlCount = resolvedPublisherUrls.size;
         candidateReports = candidateReports.map(report => {
             const publisherUrl = resolvedPublisherUrls.get(report.url);
             if (!publisherUrl) return report;
@@ -2115,6 +2130,7 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
             source: newsData.source || "selected football publication feeds",
             providersAttempted: newsData.providersAttempted || [],
             providerErrors: newsData.providerErrors || [],
+            resolverDiagnostics,
             articleCount: articles.length,
             extractionStatus,
             aiModel,
