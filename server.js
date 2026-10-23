@@ -1418,14 +1418,21 @@ async function sendGroqFallback(res, systemInstruction, userContent, evidence) {
     }
 }
 
-// Safe in-memory diagnostic for the most recent match-intelligence failure.
-// Deliberately excludes provider messages, credentials, and request contents.
+// Safe in-memory diagnostics for the most recent cloud-analysis failures.
+// These records deliberately exclude credentials, prompts, and match details.
 let lastMatchAnalysisFailure = null;
+let lastAiAnalysisFailure = null;
 app.get("/api/match-intelligence/diagnostics", (req, res) => {
     if (!lastMatchAnalysisFailure) {
         return res.json({ status: "no_recent_failure", checkedAt: new Date().toISOString() });
     }
     return res.json({ ...lastMatchAnalysisFailure, checkedAt: new Date().toISOString() });
+});
+app.get("/api/ai/diagnostics", (req, res) => {
+    if (!lastAiAnalysisFailure) {
+        return res.json({ status: "no_recent_failure", checkedAt: new Date().toISOString() });
+    }
+    return res.json({ ...lastAiAnalysisFailure, checkedAt: new Date().toISOString() });
 });
 
 // Evidence-grounded conversational analysis. Provider keys stay on the server.
@@ -1759,12 +1766,19 @@ app.post("/api/ai/analyze", async (req, res) => {
         JSON.stringify(completedHistory);
 
     void logSystemEvent("ai_analysis_requested", "info", "AI analysis request received.", { questionLength: prompt.length });
+    const recordAiFailure = (status, stage, providerHttpStatus, errorType, retryable) => {
+        lastAiAnalysisFailure = {
+            status, stage, providerHttpStatus: providerHttpStatus || null,
+            errorType, retryable: Boolean(retryable)
+        };
+    };
     try {
         // Groq is the primary AI provider. OpenAI is an optional independent fallback.
         let groqFailureMessage = "";
         if (process.env.GROQ_API_KEY) {
             try {
                 const result = await requestGroqAnswer(systemInstruction, userContent);
+                lastAiAnalysisFailure = null;
                 void logSystemEvent("ai_analysis_succeeded", "success", "AI analysis completed successfully.", { provider: "groq", model: result.model });
                 return res.json({
                     answer: result.answer,
@@ -1774,6 +1788,20 @@ app.post("/api/ai/analyze", async (req, res) => {
                 });
             } catch (groqError) {
                 groqFailureMessage = String(groqError && groqError.message || "Unknown Groq error");
+                const statusMatch = groqFailureMessage.match(/Groq HTTP (\\d{3})/);
+                const httpStatus = statusMatch ? Number(statusMatch[1]) : null;
+                const dailyQuota = httpStatus === 429 &&
+                    /tokens per day|requests per day|\\bTPD\\b|\\bRPD\\b|per-day limit|daily limit/i.test(groqFailureMessage);
+                const rateLimited = httpStatus === 429 || /rate.?limit|too many requests/i.test(groqFailureMessage);
+                recordAiFailure(
+                    dailyQuota ? "provider_quota_exhausted" : rateLimited ? "provider_rate_limited" : "provider_failed",
+                    "groq",
+                    httpStatus,
+                    dailyQuota ? "provider_daily_quota" : rateLimited ? "provider_rate_limit" :
+                        /timeout|timed out|abort/i.test(groqFailureMessage) ? "timeout" :
+                        /Groq HTTP 401|Groq HTTP 403/i.test(groqFailureMessage) ? "provider_authentication" : "provider_error",
+                    !dailyQuota
+                );
                 console.error("Groq primary provider failed; trying OpenAI fallback:", groqFailureMessage);
             }
         }
@@ -1802,12 +1830,21 @@ app.post("/api/ai/analyze", async (req, res) => {
             try { data = JSON.parse(textBody); }
             catch (_) { throw new Error("OpenAI returned an unreadable response."); }
             if (!response.ok) {
-                console.error("OpenAI provider error:", response.status, data.error && data.error.message);
-                return res.status(502).json({ error: "The AI analyst could not complete this request. Please try again." });
+                const providerMessage = String(data.error && data.error.message || "OpenAI provider error");
+                recordAiFailure("provider_failed", "openai", response.status,
+                    response.status === 429 ? "provider_rate_or_quota_limit" :
+                    response.status === 401 || response.status === 403 ? "provider_authentication" : "provider_error",
+                    response.status !== 401 && response.status !== 403);
+                console.error("OpenAI provider error:", response.status, providerMessage.slice(0, 180));
+                return res.status(502).json({ code: "AI_PROVIDER_FAILED", error: "The AI analyst could not complete this request. Please try again." });
             }
             const answer = data.choices && data.choices[0] && data.choices[0].message
                 ? String(data.choices[0].message.content || "").trim() : "";
-            if (!answer) return res.status(502).json({ error: "The AI analyst returned an empty answer." });
+            if (!answer) {
+                recordAiFailure("provider_failed", "openai", response.status, "empty_provider_response", true);
+                return res.status(502).json({ error: "The AI analyst returned an empty answer." });
+            }
+            lastAiAnalysisFailure = null;
             return res.json({ answer, provider: "openai", model, evidenceUsed: evidence });
         }
 
@@ -1818,16 +1855,38 @@ app.post("/api/ai/analyze", async (req, res) => {
             });
         }
 
+        recordAiFailure("ai_not_configured", "configuration", null, "missing_provider_key", false);
         return res.status(503).json({
             code: "AI_NOT_CONFIGURED",
             error: "Cloud AI is not configured. Add GROQ_API_KEY for Groq, or OPENAI_API_KEY for the optional OpenAI fallback."
         });
     } catch (error) {
-        console.error("AI analysis request failed:", error.name, error.message);
-        void logSystemEvent("ai_analysis_failed", "error", "AI analysis request failed.", { errorName: error.name, error: String(error.message || "").slice(0, 300) });
-        return res.status(502).json({
-            error: "AI analysis failed: " + String(error.name || "Error") +
-                (error.message ? " - " + String(error.message).slice(0, 180) : "")
+        const message = String(error && error.message || "unknown");
+        const statusMatch = message.match(/(?:Groq|OpenAI) HTTP (\\d{3})/);
+        const httpStatus = statusMatch ? Number(statusMatch[1]) : null;
+        const dailyQuota = httpStatus === 429 &&
+            /tokens per day|requests per day|\\bTPD\\b|\\bRPD\\b|per-day limit|daily limit/i.test(message);
+        recordAiFailure(
+            dailyQuota ? "provider_quota_exhausted" : "analysis_failed",
+            "request",
+            httpStatus,
+            dailyQuota ? "provider_daily_quota" :
+                /timeout|timed out|abort/i.test(message) ? "timeout" :
+                httpStatus === 429 ? "provider_rate_limit" :
+                httpStatus === 401 || httpStatus === 403 ? "provider_authentication" : "request_error",
+            !dailyQuota && httpStatus !== 401 && httpStatus !== 403
+        );
+        console.error("AI analysis request failed:", error.name, message.slice(0, 180));
+        void logSystemEvent("ai_analysis_failed", "error", "AI analysis request failed.", {
+            errorName: error.name, errorType: lastAiAnalysisFailure.errorType,
+            providerHttpStatus: httpStatus
+        });
+        return res.status(dailyQuota ? 503 : 502).json({
+            code: dailyQuota ? "AI_DAILY_QUOTA_EXHAUSTED" : "AI_PROVIDER_FAILED",
+            retryable: !dailyQuota,
+            error: dailyQuota
+                ? "Football Genie AI has reached its provider's daily usage limit. AI analysis will resume when the provider quota resets."
+                : "Football Genie AI could not complete this request. Please try again later."
         });
     }
 });
