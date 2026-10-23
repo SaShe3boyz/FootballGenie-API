@@ -1436,7 +1436,7 @@ app.get("/api/match-intelligence/analyze", async (req, res) => {
         if (forceRefreshNews) newsUrl.searchParams.set("forceRefresh", "true");
         const newsResponse = await fetch(newsUrl, {
             headers: { "Accept": "application/json" },
-            signal: AbortSignal.timeout(15000)
+            signal: AbortSignal.timeout(9000)
         });
         const newsData = await newsResponse.json().catch(() => ({}));
         if (!newsResponse.ok) {
@@ -1481,7 +1481,7 @@ app.get("/api/match-intelligence/analyze", async (req, res) => {
             "\nSearch time: " + String(newsData.searchedAt || "unknown") +
             "\nEvidence articles (unverified search leads; use article indexes and quote exact titles/snippets when naming players):\n" + JSON.stringify(articles);
         failureStage = "groq_analysis";
-        const result = await requestGroqAnswer(systemInstruction, userContent, { maxTokens: 1400, timeoutMs: 25000 });
+        const result = await requestGroqAnswer(systemInstruction, userContent, { maxTokens: 1000, timeoutMs: 9000, maxAttempts: 2 });
         void logSystemEvent("match_intelligence_report_created", "success", "News intelligence report generated.", {
             homeTeam, awayTeam, articleCount: articles.length, provider: "groq", model: result.model
         });
