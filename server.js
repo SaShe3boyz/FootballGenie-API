@@ -1213,10 +1213,19 @@ app.get("/api/match-intelligence/news", async (req, res) => {
             const lowerTitle = title.toLowerCase();
             const mentionsHome = lowerTitle.includes(homeTeam.toLowerCase());
             const mentionsAway = lowerTitle.includes(awayTeam.toLowerCase());
+            const mentionsBothTeams = mentionsHome && mentionsAway;
+            // Headlines about another fixture can still contain useful injury news,
+            // but should rank below reports clearly about the requested match.
+            const mentionsFixtureOpponent = /\\b(vs?\\.?|versus|against|at)\\s+[A-Z][A-Za-z.'’-]*/i.test(title);
+            const fixtureRelevance = mentionsBothTeams
+                ? "direct_fixture"
+                : (mentionsFixtureOpponent ? "team_news_other_fixture_or_opponent_context" : "team_background_news");
             const womenContext = (title + " " + description + " " + source).toLowerCase();
             const isWomensStory = /\b(women|women's|wsl|ladies|female team|women's super league|women's champions league)\b/i.test(womenContext);
             const classification = classifyFootballNews(title, description);
             let relevanceScore = (mentionsHome ? 2 : 0) + (mentionsAway ? 2 : 0);
+            if (mentionsBothTeams) relevanceScore += 4;
+            if (mentionsFixtureOpponent && !mentionsBothTeams) relevanceScore -= 2;
             if (classification.categories.some(category => ["injury", "suspension", "lineup", "manager_comment"].includes(category))) relevanceScore += 2;
             if (classification.categories.includes("unconfirmed_report")) relevanceScore += 1;
             if (/official|confirmed|press conference|team news|injury update|suspended/.test(lowerTitle)) relevanceScore += 1;
@@ -1231,6 +1240,7 @@ app.get("/api/match-intelligence/news", async (req, res) => {
                 url: /^https?:\/\//i.test(link) ? link : null,
                 categories: classification.categories,
                 certainty: classification.certainty,
+                fixtureRelevance,
                 relevanceScore,
                 isWomensStory
             };
