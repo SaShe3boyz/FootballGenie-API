@@ -86,8 +86,14 @@ record.count++;
 requests.set(ip, record);
 
 if (record.count > MAX_REQUESTS) {
+const retryAfterSeconds = Math.max(1, Math.ceil((WINDOW_MS - (now - record.start)) / 1000));
+res.set("Retry-After", String(retryAfterSeconds));
 return res.status(429).json({
-error: "Too many requests. Please try again later."
+status: "rate_limited",
+error: "Too many requests from this connection. Please wait before retrying.",
+retryAfterSeconds,
+limit: MAX_REQUESTS,
+windowSeconds: Math.floor(WINDOW_MS / 1000)
 });
 }
 
