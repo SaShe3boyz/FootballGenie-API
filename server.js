@@ -1181,7 +1181,7 @@ app.get("/api/match-intelligence/news", async (req, res) => {
         return res.json(cached.data);
     }
 
-    const query = '"' + homeTeam + '" "' + awayTeam + '" (injury OR injured OR unavailable OR suspension OR suspended OR lineup OR "team news" OR press conference) -women -"women's" -WSL -ladies when:30d';
+    const query = '"' + homeTeam + '" "' + awayTeam + '" (injury OR injured OR unavailable OR suspension OR suspended OR lineup OR "team news" OR press conference) -women -"women\'s" -WSL -ladies when:30d';
     const feedUrl = "https://news.google.com/rss/search?" + new URLSearchParams({
         q: query, hl: "en", gl: "GB", ceid: "GB:en"
     }).toString();
