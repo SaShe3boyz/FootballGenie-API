@@ -1730,7 +1730,7 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
                 if (firstBrace < 0 || lastBrace < firstBrace) throw new Error("AI response did not contain a JSON object.");
                 const parsed = JSON.parse(answerText.slice(firstBrace, lastBrace + 1));
                 const allowedTeams = [homeTeam, awayTeam];
-                candidateReports = (Array.isArray(parsed.reports) ? parsed.reports : []).slice(0, 30).flatMap(report => {
+                const aiCandidateReports = (Array.isArray(parsed.reports) ? parsed.reports : []).slice(0, 30).flatMap(report => {
                     const evidence = articles.find(item => item.evidenceId === String(report.evidenceId || ""));
                     const player = String(report.playerNameAsWritten || "").trim().slice(0, 100);
                     const team = allowedTeams.find(name => name.toLowerCase() === String(report.team || "").trim().toLowerCase());
@@ -1762,10 +1762,10 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
                         evidenceAssessment: evidence.availabilityAssessment
                     }];
                 });
-                // AI extraction is an enhancement; preserve safe literal candidates
-                // if AI is absent or returns no usable names.
-                candidateReports = candidateReports.length ? candidateReports : [];
-                extractionStatus = "ai_extracted_candidates";
+                // Prefer validated AI candidates when present; otherwise retain
+                // the deterministic literal-headline candidates created above.
+                if (aiCandidateReports.length) candidateReports = aiCandidateReports;
+                extractionStatus = aiCandidateReports.length ? "ai_extracted_candidates" : "literal_fallback_no_ai_candidates";
             } catch (error) {
                 // Do not fail the whole absentee endpoint if AI is rate-limited; return publication evidence only.
                 console.warn("Absentee extraction fell back to evidence-only mode:", String(error.message || error).slice(0, 180));
