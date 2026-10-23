@@ -1671,6 +1671,13 @@ app.get("/api/match-intelligence/news", async (req, res) => {
         noTargetTeamInTitle: 0,
         noRelevantNewsCategory: 0
     };
+    const isDirectOfficialClubUrlForDiscovery = value => {
+        try {
+            const host = new URL(value || "").hostname.toLowerCase();
+            return ["arsenal.com", "evertonfc.com", "mancity.com", "avfc.co.uk", "rbleipzig.com", "borussia.com"]
+                .some(domain => host === domain || host.endsWith("." + domain));
+        } catch (_) { return false; }
+    };
     let parsedItems = parsedCandidates.filter(item => {
         if (!item.title || !item.url) { filterDiagnostics.missingTitleOrUrl++; return false; }
         if (item.isWomensStory) { filterDiagnostics.womenStories++; return false; }
@@ -1679,8 +1686,16 @@ app.get("/api/match-intelligence/news", async (req, res) => {
         if (item.publishedAt === null || item.ageDays === null) { filterDiagnostics.missingOrInvalidDate++; return false; }
         if (item.ageDays < 0) { filterDiagnostics.futureDates++; return false; }
         if (item.ageDays > FOOTBALL_NEWS_MAX_AGE_DAYS) { filterDiagnostics.staleDates++; return false; }
-        if (item.relevanceScore < 3) { filterDiagnostics.lowRelevance++; return false; }
         if (item.fixtureRelevance === "other_fixture_excluded_from_analysis") { filterDiagnostics.conflictingOpponent++; return false; }
+        // Direct official-club results from a team-specific official-site search are
+        // valuable even when the headline says only "injury update" and does not
+        // repeat the club name or an explicit OUT/DOUBTFUL label. Keep them so the
+        // absentee route can open the original page and inspect its actual text.
+        const directOfficialTeamResult = isDirectOfficialClubUrlForDiscovery(item.url) &&
+            item.searchTeam && [homeTeam, awayTeam].some(name =>
+                normalizeTeamName(name) === normalizeTeamName(item.searchTeam));
+        if (directOfficialTeamResult) return true;
+        if (item.relevanceScore < 3) { filterDiagnostics.lowRelevance++; return false; }
         if (!item.hasTargetTeamAsSubject) { filterDiagnostics.noTargetTeamInTitle++; return false; }
         if (!item.hasRelevantAvailabilitySignal) { filterDiagnostics.noRelevantNewsCategory++; return false; }
         return true;
