@@ -1310,6 +1310,7 @@ app.get("/api/match-intelligence/news", async (req, res) => {
     const providersAttempted = [];
     let xml = "";
     let providerUsed = "";
+    let providerFeedDiagnostics = [];
 
     // Query providers concurrently so one slow publisher cannot make the entire
     // endpoint exceed the mobile client's timeout. Keep provider order for selection.
@@ -1434,6 +1435,12 @@ app.get("/api/match-intelligence/news", async (req, res) => {
     // the team/relevance filters find useful reports in independent publications
     // when a search provider returns broad or unrelated headlines.
     const successfulProviders = providerResults.filter(result => result.xml);
+    providerFeedDiagnostics = providerResults.map(result => ({
+        provider: result.provider,
+        accepted: !!result.xml,
+        itemCount: result.xml ? [...result.xml.matchAll(/<(?:[A-Za-z0-9_.-]+:)?item(?:\s[^>]*)?>[\s\S]*?<\/(?:[A-Za-z0-9_.-]+:)?item>/gi)].length : 0,
+        error: result.error ? result.error.error || result.error.status || "provider_error" : null
+    }));
     if (successfulProviders.length) {
         const feedItems = successfulProviders.flatMap(result => {
             const matches = [...result.xml.matchAll(/<(?:[A-Za-z0-9_.-]+:)?item(?:\s[^>]*)?>([\s\S]*?)<\/(?:[A-Za-z0-9_.-]+:)?item>/gi)];
@@ -1478,6 +1485,7 @@ app.get("/api/match-intelligence/news", async (req, res) => {
             error: "Football news search providers are temporarily unavailable or rate-limited. Please try again later.",
             providersAttempted,
             providerErrors,
+            providerFeedDiagnostics,
             fallbackAttempted: providersAttempted.length > 1
         });
     }
@@ -1652,6 +1660,7 @@ app.get("/api/match-intelligence/news", async (req, res) => {
         source: providerUsed,
         providersAttempted,
         providerErrors,
+        providerFeedDiagnostics,
         teams: { home: homeTeam, away: awayTeam },
         searchedAt: new Date(fetchedAtMs).toISOString(),
         cache: {
@@ -2175,6 +2184,7 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
             source: newsData.source || "selected football publication feeds",
             providersAttempted: newsData.providersAttempted || [],
             providerErrors: newsData.providerErrors || [],
+            providerFeedDiagnostics: newsData.providerFeedDiagnostics || [],
             resolverDiagnostics,
             articleCount: articles.length,
             extractionStatus,
