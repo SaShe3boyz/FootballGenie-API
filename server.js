@@ -1777,34 +1777,60 @@ app.post("/api/ai/analyze", async (req, res) => {
             const newsUrl = new URL("/api/match-intelligence/news", req.protocol + "://" + req.get("host"));
             newsUrl.searchParams.set("homeTeam", home);
             newsUrl.searchParams.set("awayTeam", away);
+            // The RSS route itself can take up to 12 seconds. Give it enough time to
+            // finish; the old 9-second outer timeout could abort before evidence arrived.
+            newsUrl.searchParams.set("forceRefresh", "true");
             const newsResponse = await fetch(newsUrl, {
                 headers: { "Accept": "application/json" },
-                signal: AbortSignal.timeout(9000)
+                signal: AbortSignal.timeout(15000)
             });
             const newsData = await newsResponse.json().catch(() => ({}));
             if (newsResponse.ok) {
-                const articles = (Array.isArray(newsData.articles) ? newsData.articles : []).slice(0, 8).map((article, index) => ({
-                    evidenceId: "N" + (index + 1),
-                    title: String(article.title || "").slice(0, 250),
-                    source: String(article.source || "").slice(0, 100),
-                    publishedAt: article.publishedAt || null,
-                    freshness: article.freshness || "date_unknown",
-                    categories: Array.isArray(article.categories) ? article.categories : [],
-                    certainty: article.certainty || "not_established",
-                    fixtureRelevance: article.fixtureRelevance || "not_classified",
-                    snippet: String(article.snippet || "").slice(0, 350),
-                    url: article.url || null
-                }));
+                const rawArticles = Array.isArray(newsData.articles) ? newsData.articles : [];
+                // Prefer articles tagged as about this fixture; retain only a small
+                // amount of team background and label it clearly for the AI.
+                const directArticles = rawArticles.filter(article => article.fixtureRelevance === "direct_fixture");
+                const backgroundArticles = rawArticles.filter(article =>
+                    article.fixtureRelevance === "team_background_news" ||
+                    article.fixtureRelevance === "team_news_other_fixture_or_opponent_context");
+                const selectedArticles = [
+                    ...directArticles.slice(0, 5),
+                    ...backgroundArticles.slice(0, directArticles.length >= 3 ? 2 : 3)
+                ].slice(0, 8);
+                const articles = selectedArticles.map((article, index) => {
+                    const source = String(article.source || "").slice(0, 100);
+                    const sourceText = (source + " " + String(article.url || "")).toLowerCase();
+                    const officialSource = /(^|[.\\s])chelsea fc|arsenal\\.com|chelseafc\\.com|mancity\\.com|manutd\\.com|liverpoolfc\\.com|tottenhamhotspur\\.com|avfc\\.co\\.uk|evertonfc\\.com|premierleague\\.com|thefa\\.com|uefa\\.com|fifa\\.com/.test(sourceText);
+                    return {
+                        evidenceId: "N" + (index + 1),
+                        title: String(article.title || "").slice(0, 250),
+                        source,
+                        sourceAuthority: officialSource ? "possible_official_source_check_original_url" : "third_party_or_unverified_source",
+                        publishedAt: article.publishedAt || null,
+                        freshness: article.freshness || "date_unknown",
+                        categories: Array.isArray(article.categories) ? article.categories : [],
+                        certainty: article.certainty || "not_established",
+                        fixtureRelevance: article.fixtureRelevance || "not_classified",
+                        snippet: String(article.snippet || "").slice(0, 350),
+                        url: article.url || null
+                    };
+                });
                 teamNewsEvidenceStatus = articles.length ? "articles_found" : "no_articles_found";
                 userContent += "\nONLINE-PUBLICATION TEAM-NEWS EVIDENCE (search leads only; not independently verified):\n" +
-                    JSON.stringify({ status: newsData.status || "unknown", searchedAt: newsData.searchedAt || null, articles });
+                    JSON.stringify({
+                        status: newsData.status || "unknown",
+                        searchedAt: newsData.searchedAt || null,
+                        maxArticleAgeDays: newsData.maxArticleAgeDays || 30,
+                        importantNotice: newsData.importantNotice || "News articles are leads, not verified player-availability records.",
+                        articles
+                    });
             } else {
                 userContent += "\nONLINE-PUBLICATION TEAM-NEWS EVIDENCE: search failed; no live availability evidence is available for this request.";
             }
         } catch (newsError) {
             userContent += "\nONLINE-PUBLICATION TEAM-NEWS EVIDENCE: search timed out or failed; do not guess current absentees.";
         }
-        userContent += "\nTEAM-NEWS SAFETY RULE: Use only supplied article titles/snippets. Cite title/source/date/URL for each player-specific report. Distinguish direct-fixture news from background/other-fixture articles. Headlines are not proof of current club, diagnosis, or availability; call unconfirmed reports unconfirmed. If no relevant evidence exists, say so; absence of reports does not mean the squad is fully fit. Never invent names or change numerical probabilities.";
+        userContent += "\nTEAM-NEWS SAFETY RULE: Use only supplied article titles/snippets. For every player-specific report cite the evidenceId, exact title, publication/source, publication date, and URL. Treat sourceAuthority as a heuristic only: never call a story official unless the linked original page itself is clearly an official club, league, or federation page. Prefer direct_fixture evidence; explicitly label background or other-fixture stories and do not use them to claim a player will miss THIS fixture. Freshness is based on the publication date and does not prove the report is still current. Headlines/snippets are not proof of current club, diagnosis, or availability; call unconfirmed reports unconfirmed. If no relevant evidence exists, say so; absence of reports does not mean the squad is fully fit. Never invent names or change numerical probabilities.";
     }
 
     void logSystemEvent("ai_analysis_requested", "info", "AI analysis request received.", { questionLength: prompt.length, teamNewsEvidenceStatus });
