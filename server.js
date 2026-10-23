@@ -1430,6 +1430,9 @@ app.get("/api/match-intelligence/diagnostics", (req, res) => {
 
 // Evidence-grounded conversational analysis. Provider keys stay on the server.
 // Groq is primary; OpenAI is an optional fallback if Groq is unavailable.
+// Coalesce simultaneous requests for the same fixture to prevent repeated taps
+// from launching duplicate news searches and AI requests.
+const inFlightMatchAnalyses = new Map();
 
 app.get("/api/match-intelligence/analyze", async (req, res) => {
     const homeTeam = String(req.query && req.query.homeTeam || "").trim().slice(0, 100);
@@ -1441,6 +1444,31 @@ app.get("/api/match-intelligence/analyze", async (req, res) => {
     if (!process.env.GROQ_API_KEY) {
         return res.status(503).json({ status: "ai_not_configured", error: "Groq AI is not configured on the server." });
     }
+
+    const analysisKey = homeTeam.toLowerCase() + "|" + awayTeam.toLowerCase();
+    const existingAnalysis = inFlightMatchAnalyses.get(analysisKey);
+    if (existingAnalysis) {
+        try {
+            const sharedPayload = await existingAnalysis;
+            res.set("X-Football-Genie-Request", "coalesced");
+            return res.json({ ...sharedPayload, requestCoalesced: true });
+        } catch (_) {
+            return res.status(503).json({
+                status: "analysis_in_progress_failed",
+                retryable: true,
+                error: "The first analysis request did not complete. Please try again shortly."
+            });
+        }
+    }
+
+    let resolveAnalysis;
+    let rejectAnalysis;
+    const sharedAnalysisPromise = new Promise((resolve, reject) => {
+        resolveAnalysis = resolve;
+        rejectAnalysis = reject;
+    });
+    inFlightMatchAnalyses.set(analysisKey, sharedAnalysisPromise);
+
     let failureStage = "news_fetch";
     try {
         const newsUrl = new URL("/api/match-intelligence/news", req.protocol + "://" + req.get("host"));
@@ -1503,7 +1531,7 @@ app.get("/api/match-intelligence/analyze", async (req, res) => {
         void logSystemEvent("match_intelligence_report_created", "success", "News intelligence report generated.", {
             homeTeam, awayTeam, articleCount: articles.length, provider: "groq", model: result.model
         });
-        return res.json({
+        const reportPayload = {
             status: "analysis_complete",
             fixture: { home: homeTeam, away: awayTeam },
             provider: "groq",
@@ -1513,8 +1541,11 @@ app.get("/api/match-intelligence/analyze", async (req, res) => {
             evidence: articles,
             report: result.answer,
             importantNotice: "AI-generated summaries can still make mistakes. Official confirmation is only established by checking the original official club/league/federation page; source labels and headlines alone are not enough. Verify player affiliation, medical status, return estimates, and relevance to this fixture against linked sources. No articles found does not mean there are no injuries. Numerical prediction probabilities are not changed by this report."
-        });
+        };
+        resolveAnalysis(reportPayload);
+        return res.json(reportPayload);
     } catch (error) {
+        rejectAnalysis(error);
         const diagnostic = String(error && error.message || "unknown");
         const providerQuotaExhausted = /Groq HTTP 429/i.test(diagnostic) &&
             /tokens per day|requests per day|\bTPD\b|\bRPD\b|per-day limit|daily limit/i.test(diagnostic);
@@ -1579,6 +1610,10 @@ app.get("/api/match-intelligence/analyze", async (req, res) => {
                 ? "Football Genie could not retrieve the news evidence. Please try again later."
                 : "Football Genie could not complete the AI analysis. Please try again later."
         });
+    } finally {
+        if (inFlightMatchAnalyses.get(analysisKey) === sharedAnalysisPromise) {
+            inFlightMatchAnalyses.delete(analysisKey);
+        }
     }
 });
 
