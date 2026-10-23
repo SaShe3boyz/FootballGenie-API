@@ -1288,7 +1288,9 @@ app.get("/api/match-intelligence/news", async (req, res) => {
         maxrecords: "10",
         sort: "DateDesc"
     }).toString();
-    const bingQuery = '"' + homeSearchNames + '" "' + awaySearchNames + '" (injury OR injured OR "team news" OR unavailable OR "ruled out" OR "out for")';
+    // Keep Bing's query plain: homeSearchNames/awaySearchNames already contain
+    // quoted aliases joined by OR, so wrapping them again creates malformed nested quotes.
+    const bingQuery = '"' + homeTeam + '" "' + awayTeam + '" football injury team news';
     const bingUrl = "https://www.bing.com/news/search?q=" + encodeURIComponent(bingQuery) + "&format=rss";
     const providers = [
         { name: "Google News RSS - fixture", url: googleUrl, timeoutMs: 6500 },
