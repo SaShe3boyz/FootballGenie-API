@@ -1322,9 +1322,9 @@ async function sendGroqFallback(res, systemInstruction, userContent, evidence) {
 // Evidence-grounded conversational analysis. Provider keys stay on the server.
 // Groq is primary; OpenAI is an optional fallback if Groq is unavailable.
 
-app.post("/api/match-intelligence/analyze", async (req, res) => {
-    const homeTeam = String(req.body && req.body.homeTeam || "").trim().slice(0, 100);
-    const awayTeam = String(req.body && req.body.awayTeam || "").trim().slice(0, 100);
+app.get("/api/match-intelligence/analyze", async (req, res) => {
+    const homeTeam = String(req.query && req.query.homeTeam || "").trim().slice(0, 100);
+    const awayTeam = String(req.query && req.query.awayTeam || "").trim().slice(0, 100);
     if (!homeTeam || !awayTeam || homeTeam.length < 2 || awayTeam.length < 2 ||
         homeTeam.toLowerCase() === awayTeam.toLowerCase()) {
         return res.status(400).json({ error: "Provide two different team names using homeTeam and awayTeam." });
