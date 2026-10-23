@@ -1990,7 +1990,13 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
                     signal: AbortSignal.timeout(4500)
                 });
                 const html = await response.text();
-                if (!response.ok || !response.url || !response.url.includes("news.google.com")) return null;
+                if (!response.ok || !response.url) return null;
+                // Some Google News article links still redirect directly to the publisher.
+                // Capture that final URL instead of discarding it before signature parsing.
+                const finalHost = new URL(response.url).hostname.toLowerCase();
+                if (finalHost !== "news.google.com" && !finalHost.endsWith(".news.google.com")) {
+                    return { originalUrl, directDestination: response.url };
+                }
                 const signature = (html.match(/data-n-a-sg="([^"]+)"/) || [])[1];
                 const timestamp = (html.match(/data-n-a-ts="([^"]+)"/) || [])[1];
                 const pathname = new URL(originalUrl).pathname;
@@ -2004,7 +2010,15 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
             }
         }));
 
-        const validSignatures = signatureResults.filter(Boolean);
+        for (const item of signatureResults.filter(item => item && item.directDestination)) {
+            try {
+                const destinationHost = new URL(item.directDestination).hostname.toLowerCase();
+                if (destinationHost !== "news.google.com" && !destinationHost.endsWith(".news.google.com")) {
+                    resolvedPublisherUrls.set(item.originalUrl, item.directDestination);
+                }
+            } catch (_) {}
+        }
+        const validSignatures = signatureResults.filter(item => item && item.articleId && item.signature && Number.isFinite(item.timestamp));
         if (validSignatures.length) {
             try {
                 const rpcEntries = validSignatures.map((item, index) => {
