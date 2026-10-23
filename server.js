@@ -1293,6 +1293,8 @@ app.get("/api/match-intelligence/news", async (req, res) => {
     const bingQuery = '"' + homeTeam + '" "' + awayTeam + '" football injury team news';
     const bingHomeQuery = '"' + homeTeam + '" football injury news team news';
     const bingAwayQuery = '"' + awayTeam + '" football injury news team news';
+    const bingOfficialVillaQuery = 'site:avfc.co.uk "' + homeTeam + '" injury team news';
+    const bingOfficialCityQuery = 'site:mancity.com/news/mens "' + awayTeam + '" injury team news';
     const bingUrl = query => "https://www.bing.com/news/search?q=" + encodeURIComponent(query) + "&format=rss";
     const providers = [
         { name: "Google News RSS - fixture", url: googleUrl, timeoutMs: 6500 },
@@ -1302,6 +1304,8 @@ app.get("/api/match-intelligence/news", async (req, res) => {
         { name: "Bing News RSS", url: bingUrl(bingQuery), timeoutMs: 6500 },
         { name: "Bing News RSS - home team", url: bingUrl(bingHomeQuery), timeoutMs: 6500, searchTeam: homeTeam },
         { name: "Bing News RSS - away team", url: bingUrl(bingAwayQuery), timeoutMs: 6500, searchTeam: awayTeam },
+        { name: "Bing News RSS - official Aston Villa", url: bingUrl(bingOfficialVillaQuery), timeoutMs: 6500, searchTeam: homeTeam },
+        { name: "Bing News RSS - official Manchester City", url: bingUrl(bingOfficialCityQuery), timeoutMs: 6500, searchTeam: awayTeam },
         // GDELT returns original publisher URLs, avoiding Google News wrapper resolution
         // and providing an independent fallback when Google News pages are rate-limited.
         { name: "GDELT News Search", url: gdeltUrl, timeoutMs: 4500, format: "json" },
