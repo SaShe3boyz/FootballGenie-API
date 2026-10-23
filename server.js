@@ -1396,9 +1396,15 @@ app.get("/api/match-intelligence/news", async (req, res) => {
         const validDate = parsedDate && !Number.isNaN(parsedDate.getTime()) ? parsedDate : null;
         const ageMs = validDate ? now - validDate.getTime() : null;
         const lowerTitle = title.toLowerCase();
-        const mentionsHome = lowerTitle.includes(homeTeam.toLowerCase());
-        const mentionsAway = lowerTitle.includes(awayTeam.toLowerCase());
-        const mentionsBothTeams = mentionsHome && mentionsAway;
+        const contextMarker = /\\b(?:vs?\\.?|versus|against|ahead of|before|trip to|clash with|meeting with|showdown with|tie with|game against|match against|game with|match with)\\b/i;
+        const contextIndex = title.search(contextMarker);
+        const headlineSubjectText = (contextIndex >= 0 ? title.slice(0, contextIndex) : title).toLowerCase();
+        const titleMentionsHome = lowerTitle.includes(homeTeam.toLowerCase());
+        const titleMentionsAway = lowerTitle.includes(awayTeam.toLowerCase());
+        const mentionsHome = headlineSubjectText.includes(homeTeam.toLowerCase());
+        const mentionsAway = headlineSubjectText.includes(awayTeam.toLowerCase());
+        const mentionsBothTeams = titleMentionsHome && titleMentionsAway;
+        const hasTargetTeamAsSubject = mentionsHome || mentionsAway || mentionsBothTeams;
         const opponentPattern = /\\b(?:vs?\\.?|versus|against|ahead of|before|trip to|clash with|meeting with|showdown with|tie with|game against|match against|game with|match with)\\s+([A-Z][A-Za-z.\\u0027’&-]*(?:\\s+[A-Z][A-Za-z.\\u0027’&-]*){0,2})/g;
         const namedOpponents = [...title.matchAll(opponentPattern)].map(match => match[1].trim());
         const targetNames = [homeTeam, awayTeam].map(name => name.toLowerCase());
@@ -1466,6 +1472,7 @@ app.get("/api/match-intelligence/news", async (req, res) => {
             availabilityGuidance,
             availabilityScope,
             hasRelevantAvailabilitySignal,
+            hasTargetTeamAsSubject,
             fixtureRelevance,
             relevanceScore,
             isWomensStory,
@@ -1497,7 +1504,7 @@ app.get("/api/match-intelligence/news", async (req, res) => {
         if (item.ageDays > FOOTBALL_NEWS_MAX_AGE_DAYS) { filterDiagnostics.staleDates++; return false; }
         if (item.relevanceScore < 3) { filterDiagnostics.lowRelevance++; return false; }
         if (item.fixtureRelevance === "other_fixture_excluded_from_analysis") { filterDiagnostics.conflictingOpponent++; return false; }
-        if (!(item.title.toLowerCase().includes(homeTeam.toLowerCase()) || item.title.toLowerCase().includes(awayTeam.toLowerCase()))) { filterDiagnostics.noTargetTeamInTitle++; return false; }
+        if (!item.hasTargetTeamAsSubject) { filterDiagnostics.noTargetTeamInTitle++; return false; }
         if (!item.hasRelevantAvailabilitySignal) { filterDiagnostics.noRelevantNewsCategory++; return false; }
         return true;
     });
@@ -1505,7 +1512,7 @@ app.get("/api/match-intelligence/news", async (req, res) => {
 
     parsedItems.sort((a, b) => b.relevanceScore - a.relevanceScore ||
         ((a.ageDays === null ? 9999 : a.ageDays) - (b.ageDays === null ? 9999 : b.ageDays)));
-    const items = parsedItems.slice(0, 15).map(({ relevanceScore, isWomensStory, hasSpamSignals, hasHeadlineNoise, hasRelevantAvailabilitySignal, ...item }) => item);
+    const items = parsedItems.slice(0, 15).map(({ relevanceScore, isWomensStory, hasSpamSignals, hasHeadlineNoise, hasRelevantAvailabilitySignal, hasTargetTeamAsSubject, ...item }) => item);
     const fetchedAtMs = Date.now();
     const fixtureSpecificCount = items.filter(item => item.fixtureRelevance === "direct_fixture").length;
     const teamBackgroundCount = items.filter(item => item.fixtureRelevance !== "direct_fixture").length;
