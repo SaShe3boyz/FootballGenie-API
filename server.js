@@ -1400,7 +1400,8 @@ app.get("/api/match-intelligence/analyze", async (req, res) => {
                 error: "The news search could not be completed, so no evidence-based report was generated."
             });
         }
-        const articles = (Array.isArray(newsData.articles) ? newsData.articles : []).slice(0, 12).map(article => ({
+        const articles = (Array.isArray(newsData.articles) ? newsData.articles : []).slice(0, 12).map((article, index) => ({
+            evidenceId: "E" + (index + 1),
             title: String(article.title || "").slice(0, 300),
             source: String(article.source || "").slice(0, 120),
             publishedAt: article.publishedAt || null,
@@ -1411,7 +1412,7 @@ app.get("/api/match-intelligence/analyze", async (req, res) => {
             snippet: String(article.snippet || "").slice(0, 500),
             url: article.url || null
         }));
-        const systemInstruction = "You are Football Genie Match Intelligence, an evidence-grounded football news analyst. Use ONLY the supplied articles. The report MUST identify player names whenever a supplied article title or snippet explicitly names a player, and for each named player state the reported issue/status (injury, suspension, doubtful, available, expected lineup, or other claim) only when the supplied text supports it. Never guess player names or infer a player is injured just because they appear in a headline. If no player is explicitly named in the evidence, say: No individual player names could be confirmed from the available headlines/snippets. Never invent injuries, suspensions, lineups, quotes, dates, or sources. For each player claim, cite the exact article title, source, publication date when available, and clickable URL. Separate each team into named player reports and general team news. Label whether the report is about the requested fixture or another fixture; prioritise direct_fixture articles and treat team_background_news cautiously. Distinguish source claims from verified facts. The category certainty is a text-based signal, not independent verification. Clearly label predictions, rumours, and uncertain reports. If there are no relevant articles, say that no relevant reports were found and explicitly say this does NOT mean the squad is fully fit. Explain possible relevance to the match without assigning unsupported numerical probability changes. End with confidence and what should be verified before kickoff. Do not give betting guarantees. Keep the report clear and mobile-friendly. Before answering, cross-check every player name and every player-status claim against the supplied article titles/snippets; remove any unsupported name or claim.";
+        const systemInstruction = "You are Football Genie Match Intelligence, an evidence-grounded football news analyst. Use ONLY the supplied articles. Each article has an evidenceId such as E1. For EVERY player-specific statement, include the evidenceId, quote the exact supporting words from that article's title or snippet, and provide its source, publication date when available, and clickable URL. The quoted text must support both the player name AND the stated status; a citation alone is not proof. Never infer a player's injury/status from a club name or general headline. Do not use outside knowledge. If a player name or status is not literally supported by the supplied title/snippet, omit that player-specific claim. If no player-specific claim can be supported, say so clearly. Separate reported claims from independently confirmed facts; these search results are not independently verified. Label whether an article concerns the requested fixture or another fixture; prioritise direct_fixture articles and treat team_background_news cautiously. Clearly label rumours and uncertain reports. Missing reports do NOT mean the squad is fully fit. Explain possible relevance without changing numerical probabilities. Do not give betting guarantees. Keep the report clear and mobile-friendly. Final check: every player name, status, source, and date must be traceable to the cited evidence item; remove unsupported details.";
         const userContent = "Requested fixture: " + homeTeam + " vs " + awayTeam +
             "\nSearch status: " + String(newsData.status || "unknown") +
             "\nSearch time: " + String(newsData.searchedAt || "unknown") +
@@ -1430,7 +1431,7 @@ app.get("/api/match-intelligence/analyze", async (req, res) => {
             articleCount: articles.length,
             evidence: articles,
             report: result.answer,
-            importantNotice: "This AI report summarises news search leads; it does not independently verify availability. Open sources and confirm updates close to kickoff. No articles found does not mean there are no injuries."
+            importantNotice: "AI-generated summaries can still make mistakes. Treat the evidence list as the source of truth: verify each player name and status against the linked article title/snippet and original page. Search headlines do not independently confirm availability. No articles found does not mean there are no injuries."
         });
     } catch (error) {
         const diagnostic = String(error && error.message || "unknown");
