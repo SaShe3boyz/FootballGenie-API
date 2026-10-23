@@ -1270,7 +1270,9 @@ app.get("/api/match-intelligence/news", async (req, res) => {
                 isWomensStory
             };
         }).filter(item => item.title && item.url && !item.isWomensStory &&
-            (item.ageDays === null || item.ageDays <= FOOTBALL_NEWS_MAX_AGE_DAYS) &&
+            // Unknown or future publication dates are not safe evidence for a current-match review.
+            item.publishedAt !== null && item.ageDays !== null && item.ageDays >= 0 &&
+            item.ageDays <= FOOTBALL_NEWS_MAX_AGE_DAYS &&
             item.relevanceScore >= 3 &&
             item.fixtureRelevance !== "other_fixture_excluded_from_analysis" &&
             (item.title.toLowerCase().includes(homeTeam.toLowerCase()) || item.title.toLowerCase().includes(awayTeam.toLowerCase())) &&
@@ -1293,7 +1295,7 @@ app.get("/api/match-intelligence/news", async (req, res) => {
             maxArticleAgeDays: FOOTBALL_NEWS_MAX_AGE_DAYS,
             count: items.length,
             articles: items,
-            importantNotice: "News items are search leads, not verified player-availability records. Headlines that clearly name a different opponent are excluded from the analysis feed to reduce cross-fixture contamination. This conservative filter may omit useful background reports. Freshness is based on the RSS publication date. Open the original source and verify the exact fixture, player, team, and availability before changing a prediction. 'Confirmed' is a wording signal, not independent verification. No results does not mean there are no injuries."
+            importantNotice: "News items are search leads, not verified player-availability records. Headlines that clearly name a different opponent are excluded from the analysis feed to reduce cross-fixture contamination. This conservative filter may omit useful background reports. Articles with missing or future publication dates are excluded from the analysis feed. Freshness is based on the RSS publication date. Open the original source and verify the exact fixture, player, team, and availability before changing a prediction. 'Confirmed' is a wording signal, not independent verification. No results does not mean there are no injuries."
         };
         const fetchedAtMs = Date.now();
         result.cache.fetchedAt = new Date(fetchedAtMs).toISOString();
