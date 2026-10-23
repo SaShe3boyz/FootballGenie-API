@@ -1449,7 +1449,8 @@ app.get("/api/match-intelligence/news", async (req, res) => {
                 const searchTeamTag = result.searchTeam
                     ? "<searchteam>" + String(result.searchTeam).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;") + "</searchteam>"
                     : "";
-                return "<item>" + match[1] + "<source>" + source + "</source>" + searchTeamTag + "</item>";
+                const searchProviderTag = "<searchprovider>" + result.provider.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;") + "</searchprovider>";
+                return "<item>" + match[1] + "<source>" + source + "</source>" + searchTeamTag + searchProviderTag + "</item>";
             });
         });
         if (feedItems.length) {
@@ -1503,6 +1504,7 @@ app.get("/api/match-intelligence/news", async (req, res) => {
         const description = (newsXmlTag(block, "description") || newsXmlTag(block, "summary") || newsXmlTag(block, "content"))
             .replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").slice(0, 500);
         const searchTeam = newsXmlTag(block, "searchteam");
+        const searchProvider = newsXmlTag(block, "searchprovider");
         const source = newsXmlTag(block, "source") ||
             newsXmlTag(block, "name") ||
             ((block.match(/<(?:[A-Za-z0-9_-]+:)?Source(?:\s[^>]*)?>([\s\S]*?)<\/(?:[A-Za-z0-9_-]+:)?Source>/i) || [])[1]
@@ -1583,6 +1585,7 @@ app.get("/api/match-intelligence/news", async (req, res) => {
             title: title.slice(0, 300),
             source: source.slice(0, 120) || "Source not identified",
             searchTeam: searchTeam || null,
+            searchProvider: searchProvider || null,
             publishedAt: validDate ? validDate.toISOString() : null,
             ageDays: ageMs === null ? null : Math.floor(ageMs / (24 * 60 * 60 * 1000)),
             freshness: ageMs === null ? "date_unknown" : ageMs < 0 ? "future_date_check" : ageMs <= 7 * 24 * 60 * 60 * 1000 ? "fresh_7d" : ageMs <= maxAgeMs ? "recent_30d" : "stale",
@@ -1632,6 +1635,39 @@ app.get("/api/match-intelligence/news", async (req, res) => {
     });
     filterDiagnostics.accepted = parsedItems.length;
 
+    // Bing often supplies original publisher URLs for headlines Google News returns
+    // as opaque aggregator links. Match only close title pairs; resolving a URL does
+    // not independently verify the article's availability claim.
+    const normalizeHeadlineForLinkMatch = value => String(value || "").toLowerCase()
+        .replace(/[^a-z0-9]+/g, " ").trim().split(/\s+/).filter(token => token.length > 2);
+    const bingPublisherCandidates = parsedItems.filter(item => {
+        if (item.searchProvider !== "Bing News RSS" || !item.url) return false;
+        try {
+            const host = new URL(item.url).hostname.toLowerCase();
+            return host !== "bing.com" && !host.endsWith(".bing.com") &&
+                host !== "news.google.com" && !host.endsWith(".news.google.com");
+        } catch (_) { return false; }
+    });
+    let bingPublisherLinksMatched = 0;
+    parsedItems = parsedItems.map(item => {
+        if (!item.url || !/^(?:https?:\/\/)?(?:www\.)?news\.google\.com\//i.test(item.url)) return item;
+        const itemTokens = new Set(normalizeHeadlineForLinkMatch(item.title));
+        if (!itemTokens.size) return item;
+        let best = null, bestScore = 0;
+        for (const candidate of bingPublisherCandidates) {
+            const candidateTokens = new Set(normalizeHeadlineForLinkMatch(candidate.title));
+            if (!candidateTokens.size) continue;
+            let overlap = 0;
+            for (const token of itemTokens) if (candidateTokens.has(token)) overlap++;
+            const score = overlap / Math.max(itemTokens.size, candidateTokens.size);
+            if (score > bestScore) { bestScore = score; best = candidate; }
+        }
+        if (!best || bestScore < 0.72) return item;
+        bingPublisherLinksMatched++;
+        return { ...item, url: best.url, originalPublisherUrlResolved: true,
+            publisherUrlResolutionMethod: "matched_bing_news_headline",
+            publisherUrlResolutionScore: Number(bestScore.toFixed(2)) };
+    });
     parsedItems.sort((a, b) => b.relevanceScore - a.relevanceScore ||
         ((a.ageDays === null ? 9999 : a.ageDays) - (b.ageDays === null ? 9999 : b.ageDays)));
     // Combine the two club-specific searches but remove duplicate headlines.
@@ -1671,6 +1707,10 @@ app.get("/api/match-intelligence/news", async (req, res) => {
         },
         maxArticleAgeDays: FOOTBALL_NEWS_MAX_AGE_DAYS,
         filterDiagnostics,
+        publisherLinkResolutionDiagnostics: {
+            bingPublisherCandidateCount: bingPublisherCandidates.length,
+            googleNewsLinksMatchedToBingPublisher: bingPublisherLinksMatched
+        },
         count: items.length,
         articles: items,
         importantNotice: "News items are search leads, not verified player-availability records. Headlines that clearly name a different opponent are excluded to reduce cross-fixture contamination. Articles with missing or future publication dates are excluded. Open the original source and verify the exact fixture, player, team, and availability before changing a prediction. 'Confirmed' is a wording signal, not independent verification. No results does not mean there are no injuries."
@@ -1809,6 +1849,9 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
             title: String(article.title || "").slice(0, 300),
             source: String(article.source || "").slice(0, 120),
             searchTeam: String(article.searchTeam || "").slice(0, 100) || null,
+            searchProvider: String(article.searchProvider || "").slice(0, 100) || null,
+            originalPublisherUrlResolved: article.originalPublisherUrlResolved === true,
+            publisherUrlResolutionMethod: article.publisherUrlResolutionMethod || null,
             publishedAt: article.publishedAt || null,
             snippet: String(article.snippet || "").slice(0, 500),
             url: article.url || null,
@@ -2185,6 +2228,7 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
             providersAttempted: newsData.providersAttempted || [],
             providerErrors: newsData.providerErrors || [],
             providerFeedDiagnostics: newsData.providerFeedDiagnostics || [],
+            publisherLinkResolutionDiagnostics: newsData.publisherLinkResolutionDiagnostics || null,
             resolverDiagnostics,
             articleCount: articles.length,
             extractionStatus,
