@@ -1499,8 +1499,16 @@ app.get("/api/match-intelligence/news", async (req, res) => {
         ((a.ageDays === null ? 9999 : a.ageDays) - (b.ageDays === null ? 9999 : b.ageDays)));
     const items = parsedItems.slice(0, 15).map(({ relevanceScore, isWomensStory, hasSpamSignals, hasHeadlineNoise, hasRelevantAvailabilitySignal, ...item }) => item);
     const fetchedAtMs = Date.now();
+    const fixtureSpecificCount = items.filter(item => item.fixtureRelevance === "direct_fixture").length;
+    const teamBackgroundCount = items.filter(item => item.fixtureRelevance !== "direct_fixture").length;
     const result = {
         status: items.length ? "news_found" : "no_recent_relevant_articles",
+        fixtureSpecificCount,
+        teamBackgroundCount,
+        hasFixtureSpecificEvidence: fixtureSpecificCount > 0,
+        matchImpactWarning: fixtureSpecificCount > 0
+            ? "At least one headline names both teams, but verify the original report and player status before changing a prediction."
+            : "No fixture-specific availability evidence was found. Returned articles are team-background leads only and must not be treated as confirmed absentees for this match.",
         source: providerUsed,
         providersAttempted,
         providerErrors,
