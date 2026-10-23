@@ -1212,10 +1212,14 @@ app.get("/api/match-intelligence/news", async (req, res) => {
     const bingUrl = "https://www.bing.com/news/search?" + new URLSearchParams({
         q: query, format: "rss"
     }).toString();
+    const yahooUrl = "https://news.search.yahoo.com/rss?" + new URLSearchParams({
+        p: query
+    }).toString();
 
     const providers = [
         { name: "Google News RSS", url: googleUrl },
-        { name: "Bing News RSS", url: bingUrl }
+        { name: "Bing News RSS", url: bingUrl },
+        { name: "Yahoo News RSS", url: yahooUrl }
     ];
     const providerErrors = [];
     const providersAttempted = [];
@@ -1261,6 +1265,7 @@ app.get("/api/match-intelligence/news", async (req, res) => {
             return res.json({
                 ...cached.data,
                 status: "stale_news_fallback",
+                providersAttempted,
                 providerErrors,
                 importantNotice: "Live news providers are currently unavailable or rate-limited. These are cached search leads, not verified player-availability records. Check the original sources before kickoff.",
                 cache: {
@@ -1274,8 +1279,9 @@ app.get("/api/match-intelligence/news", async (req, res) => {
         return res.status(502).json({
             status: "news_provider_error",
             error: "Football news search providers are temporarily unavailable or rate-limited. Please try again later.",
+            providersAttempted,
             providerErrors,
-            fallbackAttempted: true
+            fallbackAttempted: providersAttempted.length > 1
         });
     }
 
