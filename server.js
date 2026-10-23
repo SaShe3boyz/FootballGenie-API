@@ -1124,7 +1124,7 @@ app.get("/api/match-intelligence/injuries", async (req, res) => {
 // Free-first football news discovery using Google News RSS. RSS results are leads, not proof of player availability.
 // Keep recent, team-relevant stories and label the evidence so the app can distinguish stale reports.
 const footballNewsCache = new Map();
-const FOOTBALL_NEWS_CACHE_TTL_MS = 10 * 60 * 1000;
+const FOOTBALL_NEWS_CACHE_TTL_MS = 5 * 60 * 1000;
 const FOOTBALL_NEWS_MAX_AGE_DAYS = 30;
 
 function decodeNewsXml(value) {
@@ -1175,11 +1175,27 @@ app.get("/api/match-intelligence/news", async (req, res) => {
         return res.status(400).json({ error: "Provide two different valid team names." });
     }
     const cacheKey = homeTeam.toLowerCase() + "|" + awayTeam.toLowerCase();
+    // forceRefresh=true bypasses the short cache for a deliberate fresh lookup.
+    // Prevent browsers and proxies from silently reusing old news responses.
+    res.set("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+    res.set("Pragma", "no-cache");
+    res.set("Expires", "0");
+    const forceRefresh = /^(1|true|yes)$/i.test(String(req.query.forceRefresh || ""));
     const cached = footballNewsCache.get(cacheKey);
-    if (cached && Date.now() < cached.expiresAt) {
+    if (!forceRefresh && cached && Date.now() < cached.expiresAt) {
         res.set("X-Football-Genie-Cache", "HIT");
-        return res.json(cached.data);
+        return res.json({
+            ...cached.data,
+            cache: {
+                status: "cached",
+                fetchedAt: cached.fetchedAt,
+                ageSeconds: Math.max(0, Math.floor((Date.now() - cached.fetchedAtMs) / 1000)),
+                ttlSecondsRemaining: Math.max(0, Math.ceil((cached.expiresAt - Date.now()) / 1000)),
+                forceRefreshAvailable: true
+            }
+        });
     }
+    res.set("X-Football-Genie-Cache", forceRefresh ? "BYPASS" : "MISS");
 
     const query = '"' + homeTeam + '" "' + awayTeam + '" (injury OR injured OR unavailable OR suspension OR suspended OR lineup OR "team news" OR press conference) -women -"women\'s" -WSL -ladies when:30d';
     const feedUrl = "https://news.google.com/rss/search?" + new URLSearchParams({
@@ -1268,12 +1284,25 @@ app.get("/api/match-intelligence/news", async (req, res) => {
             source: "Google News RSS",
             teams: { home: homeTeam, away: awayTeam },
             searchedAt: new Date().toISOString(),
+            cache: {
+                status: "fresh",
+                fetchedAt: new Date().toISOString(),
+                ttlSeconds: Math.floor(FOOTBALL_NEWS_CACHE_TTL_MS / 1000),
+                forceRefreshAvailable: true
+            },
             maxArticleAgeDays: FOOTBALL_NEWS_MAX_AGE_DAYS,
             count: items.length,
             articles: items,
             importantNotice: "News items are search leads, not verified player-availability records. Headlines that clearly name a different opponent are excluded from the analysis feed to reduce cross-fixture contamination. This conservative filter may omit useful background reports. Freshness is based on the RSS publication date. Open the original source and verify the exact fixture, player, team, and availability before changing a prediction. 'Confirmed' is a wording signal, not independent verification. No results does not mean there are no injuries."
         };
-        footballNewsCache.set(cacheKey, { expiresAt: Date.now() + FOOTBALL_NEWS_CACHE_TTL_MS, data: result });
+        const fetchedAtMs = Date.now();
+        result.cache.fetchedAt = new Date(fetchedAtMs).toISOString();
+        footballNewsCache.set(cacheKey, {
+            expiresAt: fetchedAtMs + FOOTBALL_NEWS_CACHE_TTL_MS,
+            fetchedAtMs,
+            fetchedAt: result.cache.fetchedAt,
+            data: result
+        });
         return res.json(result);
     } catch (error) {
         console.error("Football news RSS search failed:", error.message);
