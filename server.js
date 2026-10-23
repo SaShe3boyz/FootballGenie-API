@@ -1286,6 +1286,10 @@ app.get("/api/match-intelligence/news", async (req, res) => {
             name: "Official Everton website discovery"
         }
     ];
+    // Generic official-source discovery is deliberately separate from the small
+    // club-domain fast-path above. Search official club domains for both selected
+    // teams even when a club is not in the fast-path registry; the absentee route
+    // still accepts only verified club-owned article URLs.
     const requestedTeams = [homeTeam, awayTeam];
     const officialProviders = officialClubDomains.flatMap(entry => {
         const team = requestedTeams.find(name =>
