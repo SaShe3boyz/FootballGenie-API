@@ -1274,6 +1274,16 @@ app.get("/api/match-intelligence/news", async (req, res) => {
             aliases: ["borussia monchengladbach", "borussia mönchengladbach", "borussia m'gladbach", "monchengladbach", "mönchengladbach", "gladbach"],
             domain: "borussia.com",
             name: "Official Borussia Mönchengladbach website discovery"
+        },
+        {
+            aliases: ["arsenal", "arsenal fc", "the arsenal", "the gunners"],
+            domain: "arsenal.com/news",
+            name: "Official Arsenal website discovery"
+        },
+        {
+            aliases: ["everton", "everton fc", "everton football club", "the toffees"],
+            domain: "evertonfc.com/news",
+            name: "Official Everton website discovery"
         }
     ];
     const requestedTeams = [homeTeam, awayTeam];
@@ -1303,9 +1313,20 @@ app.get("/api/match-intelligence/news", async (req, res) => {
     const bingQuery = '"' + homeTeam + '" "' + awayTeam + '" football injury team news';
     const bingHomeQuery = '"' + homeTeam + '" football injury news team news';
     const bingAwayQuery = '"' + awayTeam + '" football injury news team news';
-    const bingOfficialVillaQuery = 'site:avfc.co.uk "' + homeTeam + '" injury team news';
-    const bingOfficialCityQuery = 'site:mancity.com/news/mens "' + awayTeam + '" injury team news';
     const bingUrl = query => "https://www.bing.com/news/search?q=" + encodeURIComponent(query) + "&format=rss";
+    const officialBingProviders = officialClubDomains.flatMap(entry => {
+        const team = requestedTeams.find(name =>
+            entry.aliases.some(alias => normalizeTeamName(alias) === normalizeTeamName(name)));
+        if (!team) return [];
+        const query = 'site:' + entry.domain + ' "' + team + '" (injury OR injured OR unavailable OR "team news" OR "fitness update" OR "ruled out" OR doubtful OR suspension)';
+        return [{
+            name: "Bing News RSS - " + entry.name,
+            url: bingUrl(query),
+            timeoutMs: 6500,
+            searchTeam: team,
+            officialPublisherDomain: entry.domain
+        }];
+    });
     const providers = [
         { name: "Google News RSS - fixture", url: googleUrl, timeoutMs: 6500 },
         { name: "Google News RSS - home team", url: teamGoogleUrl(homeTeamQuery), timeoutMs: 6500, searchTeam: homeTeam },
@@ -1314,8 +1335,7 @@ app.get("/api/match-intelligence/news", async (req, res) => {
         { name: "Bing News RSS", url: bingUrl(bingQuery), timeoutMs: 6500 },
         { name: "Bing News RSS - home team", url: bingUrl(bingHomeQuery), timeoutMs: 6500, searchTeam: homeTeam },
         { name: "Bing News RSS - away team", url: bingUrl(bingAwayQuery), timeoutMs: 6500, searchTeam: awayTeam },
-        { name: "Bing News RSS - official Aston Villa", url: bingUrl(bingOfficialVillaQuery), timeoutMs: 6500, searchTeam: homeTeam },
-        { name: "Bing News RSS - official Manchester City", url: bingUrl(bingOfficialCityQuery), timeoutMs: 6500, searchTeam: awayTeam },
+        ...officialBingProviders,
         // GDELT returns original publisher URLs, avoiding Google News wrapper resolution
         // and providing an independent fallback when Google News pages are rate-limited.
         { name: "GDELT News Search", url: gdeltUrl, timeoutMs: 4500, format: "json" },
@@ -1707,7 +1727,9 @@ app.get("/api/match-intelligence/news", async (req, res) => {
             return host === "avfc.co.uk" || host.endsWith(".avfc.co.uk") ||
                 host === "mancity.com" || host.endsWith(".mancity.com") ||
                 host === "rbleipzig.com" || host.endsWith(".rbleipzig.com") ||
-                host === "borussia.com" || host.endsWith(".borussia.com");
+                host === "borussia.com" || host.endsWith(".borussia.com") ||
+                host === "arsenal.com" || host.endsWith(".arsenal.com") ||
+                host === "evertonfc.com" || host.endsWith(".evertonfc.com");
         } catch (_) { return false; }
     };
     parsedItems = parsedItems.map(item => ({
@@ -1987,7 +2009,11 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
                                     return "news_aggregator_link_original_publisher_not_resolved";
                                 }
                                 if (host === "mancity.com" || host.endsWith(".mancity.com") ||
-                                    host === "avfc.co.uk" || host.endsWith(".avfc.co.uk")) {
+                                    host === "avfc.co.uk" || host.endsWith(".avfc.co.uk") ||
+                                    host === "rbleipzig.com" || host.endsWith(".rbleipzig.com") ||
+                                    host === "borussia.com" || host.endsWith(".borussia.com") ||
+                                    host === "arsenal.com" || host.endsWith(".arsenal.com") ||
+                                    host === "evertonfc.com" || host.endsWith(".evertonfc.com")) {
                                     return "official_club_domain_direct_link_content_not_verified";
                                 }
                                 return "publisher_link_candidate_not_independently_verified";
@@ -1999,7 +2025,11 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
                             try {
                                 const host = new URL(evidence.url).hostname.toLowerCase();
                                 return host === "mancity.com" || host.endsWith(".mancity.com") ||
-                                    host === "avfc.co.uk" || host.endsWith(".avfc.co.uk");
+                                    host === "avfc.co.uk" || host.endsWith(".avfc.co.uk") ||
+                                    host === "rbleipzig.com" || host.endsWith(".rbleipzig.com") ||
+                                    host === "borussia.com" || host.endsWith(".borussia.com") ||
+                                    host === "arsenal.com" || host.endsWith(".arsenal.com") ||
+                                    host === "evertonfc.com" || host.endsWith(".evertonfc.com");
                             } catch (_) { return false; }
                         })(),
                         sourceTrustTier: evidence.sourceTrustTier || (evidence.officialClubSource === true ? "official_club_website" : "secondary_publication"),
