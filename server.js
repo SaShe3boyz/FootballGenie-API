@@ -1434,7 +1434,10 @@ app.get("/api/match-intelligence/news", async (req, res) => {
     // Combine successful feeds rather than stopping at the first one. This lets
     // the team/relevance filters find useful reports in independent publications
     // when a search provider returns broad or unrelated headlines.
-    const successfulProviders = providerResults.filter(result => result.xml);
+    const successfulProviders = providerResults.filter(result => result.xml)
+        // Parse Bing early so its original publisher links are not pushed beyond
+        // the shared candidate cap by 200+ Google News search results.
+        .sort((a, b) => (a.provider === "Bing News RSS" ? -1 : 0) - (b.provider === "Bing News RSS" ? -1 : 0));
     providerFeedDiagnostics = providerResults.map(result => ({
         provider: result.provider,
         accepted: !!result.xml,
@@ -1443,7 +1446,8 @@ app.get("/api/match-intelligence/news", async (req, res) => {
     }));
     if (successfulProviders.length) {
         const feedItems = successfulProviders.flatMap(result => {
-            const matches = [...result.xml.matchAll(/<(?:[A-Za-z0-9_.-]+:)?item(?:\s[^>]*)?>([\s\S]*?)<\/(?:[A-Za-z0-9_.-]+:)?item>/gi)];
+            const matches = [...result.xml.matchAll(/<(?:[A-Za-z0-9_.-]+:)?item(?:\s[^>]*)?>([\s\S]*?)<\/(?:[A-Za-z0-9_.-]+:)?item>/gi)]
+                .slice(0, result.provider === "Bing News RSS" ? 20 : 15);
             return matches.map(match => {
                 const source = result.provider.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
                 const searchTeamTag = result.searchTeam
