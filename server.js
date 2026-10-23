@@ -1972,7 +1972,7 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
                 }
             }))].slice(0, 8);
         const resolvedPublisherUrls = new Map();
-        const resolverDiagnostics = { googleNewsUrlCount: googleNewsUrls.length, pageFetchSuccessCount: 0, directRedirectCount: 0, signatureExtractedCount: 0, signatureMissingCount: 0, pageFetchErrorCount: 0, pageFetchErrorKinds: [], rpcAttempted: false, rpcHttpStatus: null, rpcErrorKind: null, rpcResponseLength: 0, rpcRowsParsed: 0, rpcAcceptedRows: 0, publisherDestinationsExtracted: 0, resolvedPublisherUrlCount: 0 };
+        const resolverDiagnostics = { googleNewsUrlCount: googleNewsUrls.length, pageFetchSuccessCount: 0, pageFetchNonOkStatuses: [], pageFetchMissingUrlCount: 0, directRedirectCount: 0, signatureExtractedCount: 0, signatureMissingCount: 0, pageFetchErrorCount: 0, pageFetchErrorKinds: [], rpcAttempted: false, rpcHttpStatus: null, rpcErrorKind: null, rpcResponseLength: 0, rpcRowsParsed: 0, rpcAcceptedRows: 0, publisherDestinationsExtracted: 0, resolvedPublisherUrlCount: 0 };
 
         // Google News no longer reliably redirects RSS article links to publishers.
         // Its current flow requires a per-article signature followed by one batched
@@ -1999,7 +1999,14 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
                     signal: AbortSignal.timeout(4500)
                 });
                 const html = await response.text();
-                if (!response.ok || !response.url) return null;
+                if (!response.ok) {
+                    resolverDiagnostics.pageFetchNonOkStatuses.push(response.status);
+                    return null;
+                }
+                if (!response.url) {
+                    resolverDiagnostics.pageFetchMissingUrlCount += 1;
+                    return null;
+                }
                 resolverDiagnostics.pageFetchSuccessCount += 1;
                 // Some Google News article links still redirect directly to the publisher.
                 // Capture that final URL instead of discarding it before signature parsing.
