@@ -1531,6 +1531,11 @@ app.get("/api/match-intelligence/news", async (req, res) => {
             .replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").slice(0, 500);
         const searchTeam = newsXmlTag(block, "searchteam");
         const searchProvider = newsXmlTag(block, "searchprovider");
+        const sourceTagMatch = block.match(/<(?:[A-Za-z0-9_.-]+:)?source\b([^>]*)>([\s\S]*?)<\/(?:[A-Za-z0-9_.-]+:)?source>/i);
+        const publisherSourceUrlMatch = sourceTagMatch && sourceTagMatch[1]
+            ? sourceTagMatch[1].match(/\burl\s*=\s*["']([^"']+)["']/i)
+            : null;
+        const publisherSourceUrl = publisherSourceUrlMatch ? decodeNewsXml(publisherSourceUrlMatch[1]) : null;
         const source = newsXmlTag(block, "source") ||
             newsXmlTag(block, "name") ||
             ((block.match(/<(?:[A-Za-z0-9_-]+:)?Source(?:\s[^>]*)?>([\s\S]*?)<\/(?:[A-Za-z0-9_-]+:)?Source>/i) || [])[1]
@@ -1617,6 +1622,7 @@ app.get("/api/match-intelligence/news", async (req, res) => {
             freshness: ageMs === null ? "date_unknown" : ageMs < 0 ? "future_date_check" : ageMs <= 7 * 24 * 60 * 60 * 1000 ? "fresh_7d" : ageMs <= maxAgeMs ? "recent_30d" : "stale",
             snippet: description,
             url: /^https?:\/\//i.test(link) ? link : null,
+            publisherSourceUrl: /^https?:\/\//i.test(publisherSourceUrl || "") ? publisherSourceUrl : null,
             categories: classification.categories,
             certainty: classification.certainty,
             availabilityAssessment,
@@ -1706,8 +1712,12 @@ app.get("/api/match-intelligence/news", async (req, res) => {
     };
     parsedItems = parsedItems.map(item => ({
         ...item,
-        officialClubSource: isOfficialClubUrl(item.url),
-        sourceTrustTier: isOfficialClubUrl(item.url) ? "official_club_website" : "secondary_publication"
+        // Google News RSS wraps article links, but its <source url> attribute
+        // identifies the publisher domain. Trust it only when it matches a supported
+        // official club domain; keep the wrapped article URL as an unverified lead.
+        officialClubSource: isOfficialClubUrl(item.url) || isOfficialClubUrl(item.publisherSourceUrl),
+        sourceTrustTier: (isOfficialClubUrl(item.url) || isOfficialClubUrl(item.publisherSourceUrl))
+            ? "official_club_website" : "secondary_publication"
     }));
     parsedItems.sort((a, b) => Number(b.officialClubSource) - Number(a.officialClubSource) ||
         b.relevanceScore - a.relevanceScore ||
