@@ -1624,6 +1624,11 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
                         : evidence.availabilityAssessment === "reported_doubtful_or_test_pending"
                             ? "doubtful_or_test_pending"
                             : "availability_not_established";
+                    return [{
+                        player,
+                        team,
+                        reportedStatus,
+                        reason: String(report.reasonAsWritten || "").slice(0, 220),
                         evidenceId: evidence.evidenceId,
                         title: evidence.title,
                         source: evidence.source,
