@@ -1449,7 +1449,9 @@ app.get("/api/match-intelligence/news", async (req, res) => {
         const mentionsHome = textMentionsFootballTeam(headlineSubjectText + " " + source, homeTeam);
         const mentionsAway = textMentionsFootballTeam(headlineSubjectText + " " + source, awayTeam);
         const mentionsBothTeams = titleMentionsHome && titleMentionsAway;
-        const hasTargetTeamAsSubject = mentionsHome || mentionsAway || mentionsBothTeams;
+        const searchContextMatchesTarget = !!searchTeam && [homeTeam, awayTeam].some(name =>
+            normalizeTeamName(name) === normalizeTeamName(searchTeam));
+        const hasTargetTeamAsSubject = mentionsHome || mentionsAway || mentionsBothTeams || searchContextMatchesTarget;
         const opponentPattern = /\b(?:vs?\.?|versus|against|ahead of|before|after|following|trip to|clash with|meeting with|showdown with|tie with|game against|match against|game with|match with)\s+([A-Z][A-Za-z.'’&-]*(?:\s+[A-Z][A-Za-z.'’&-]*){0,2})/g;
         const namedOpponents = [...title.matchAll(opponentPattern)].map(match => match[1].trim());
         const targetNames = [homeTeam, awayTeam].map(name => name.toLowerCase());
@@ -1496,6 +1498,7 @@ app.get("/api/match-intelligence/news", async (req, res) => {
             classification.categories.some(category => ["injury", "suspension", "lineup"].includes(category)) ||
             (classification.categories.includes("manager_comment") && managerAvailabilityContext);
         let relevanceScore = (mentionsHome ? 2 : 0) + (mentionsAway ? 2 : 0);
+        if (searchContextMatchesTarget) relevanceScore += 2;
         if (mentionsBothTeams) relevanceScore += 4;
         if (mentionsFixtureOpponent && !mentionsBothTeams) relevanceScore -= 2;
         if (conflictingFixtureOpponent && !mentionsBothTeams) relevanceScore -= 8;
