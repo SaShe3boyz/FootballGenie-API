@@ -1561,7 +1561,18 @@ app.get("/api/match-intelligence/news", async (req, res) => {
 
     parsedItems.sort((a, b) => b.relevanceScore - a.relevanceScore ||
         ((a.ageDays === null ? 9999 : a.ageDays) - (b.ageDays === null ? 9999 : b.ageDays)));
-    const items = parsedItems.slice(0, 15).map(({ relevanceScore, isWomensStory, hasSpamSignals, hasHeadlineNoise, hasRelevantAvailabilitySignal, hasTargetTeamAsSubject, ...item }) => item);
+    // Combine the two club-specific searches but remove duplicate headlines.
+    // Keep a wider evidence pool so a single-team injury report is not crowded
+    // out by repeated fixture previews before absentee extraction runs.
+    const uniqueParsedItems = [];
+    const seenNewsItems = new Set();
+    for (const item of parsedItems) {
+        const dedupeKey = String(item.url || (item.title + "|" + item.source)).toLowerCase();
+        if (seenNewsItems.has(dedupeKey)) continue;
+        seenNewsItems.add(dedupeKey);
+        uniqueParsedItems.push(item);
+    }
+    const items = uniqueParsedItems.slice(0, 30).map(({ relevanceScore, isWomensStory, hasSpamSignals, hasHeadlineNoise, hasRelevantAvailabilitySignal, hasTargetTeamAsSubject, ...item }) => item);
     const fetchedAtMs = Date.now();
     const fixtureSpecificCount = items.filter(item => item.fixtureRelevance === "direct_fixture").length;
     const teamBackgroundCount = items.filter(item => item.fixtureRelevance !== "direct_fixture").length;
