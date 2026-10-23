@@ -1606,8 +1606,11 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
             try {
                 const aiResult = await requestGroqAnswer(systemInstruction, userContent, { maxTokens: 1400, timeoutMs: 25000, maxAttempts: 1 });
                 aiModel = aiResult.model;
-                const jsonText = aiResult.answer.trim().replace(new RegExp("^" + String.fromCharCode(96).repeat(3) + "(?:json)?\\s*", "i"), "").replace(new RegExp("\\s*" + String.fromCharCode(96).repeat(3) + "$"), "").trim();
-                const parsed = JSON.parse(jsonText);
+                const answerText = aiResult.answer.trim();
+                const firstBrace = answerText.indexOf("{");
+                const lastBrace = answerText.lastIndexOf("}");
+                if (firstBrace < 0 || lastBrace < firstBrace) throw new Error("AI response did not contain a JSON object.");
+                const parsed = JSON.parse(answerText.slice(firstBrace, lastBrace + 1));
                 const allowedTeams = [homeTeam, awayTeam];
                 candidateReports = (Array.isArray(parsed.reports) ? parsed.reports : []).slice(0, 30).flatMap(report => {
                     const evidence = articles.find(item => item.evidenceId === String(report.evidenceId || ""));
