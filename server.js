@@ -1544,6 +1544,127 @@ app.get("/api/match-intelligence/news", async (req, res) => {
     return res.json(result);
 });
 
+// Structured absentee-report endpoint. Publication headlines are leads, not official confirmation.
+const absenteeReportCache = new Map();
+const ABSENTEE_REPORT_CACHE_TTL_MS = 10 * 60 * 1000;
+
+app.get("/api/match-intelligence/absentees", async (req, res) => {
+    const homeTeam = String(req.query && req.query.homeTeam || "").trim().slice(0, 100);
+    const awayTeam = String(req.query && req.query.awayTeam || "").trim().slice(0, 100);
+    if (!homeTeam || !awayTeam || homeTeam.length < 2 || awayTeam.length < 2 ||
+        homeTeam.toLowerCase() === awayTeam.toLowerCase()) {
+        return res.status(400).json({ error: "Provide two different teams using homeTeam and awayTeam." });
+    }
+
+    const cacheKey = homeTeam.toLowerCase() + "::" + awayTeam.toLowerCase();
+    const cached = absenteeReportCache.get(cacheKey);
+    if (cached && Date.now() < cached.expiresAt) {
+        res.set("X-Football-Genie-Cache", "HIT");
+        return res.json(cached.data);
+    }
+
+    try {
+        const newsUrl = new URL("/api/match-intelligence/news", req.protocol + "://" + req.get("host"));
+        newsUrl.searchParams.set("homeTeam", homeTeam);
+        newsUrl.searchParams.set("awayTeam", awayTeam);
+        // Respect the existing news cache; this endpoint should not fan out fresh RSS requests.
+        newsUrl.searchParams.set("forceRefresh", "false");
+        const newsResponse = await fetch(newsUrl, {
+            headers: { "Accept": "application/json" },
+            signal: AbortSignal.timeout(15000)
+        });
+        const newsData = await newsResponse.json().catch(() => ({}));
+        if (!newsResponse.ok) {
+            return res.status(502).json({
+                status: "news_unavailable",
+                error: "Publication evidence could not be retrieved; no absentee claims were generated.",
+                providersAttempted: newsData.providersAttempted || [],
+                providerErrors: newsData.providerErrors || []
+            });
+        }
+
+        const articles = (Array.isArray(newsData.articles) ? newsData.articles : []).slice(0, 12).map((article, index) => ({
+            evidenceId: "E" + (index + 1),
+            title: String(article.title || "").slice(0, 300),
+            source: String(article.source || "").slice(0, 120),
+            publishedAt: article.publishedAt || null,
+            snippet: String(article.snippet || "").slice(0, 500),
+            url: article.url || null,
+            categories: Array.isArray(article.categories) ? article.categories : [],
+            availabilityAssessment: article.availabilityAssessment || "availability_not_established",
+            fixtureRelevance: article.fixtureRelevance || "team_background_news"
+        }));
+
+        let candidateReports = [];
+        let extractionStatus = "evidence_only";
+        let aiModel = null;
+        if (articles.length && process.env.GROQ_API_KEY) {
+            const systemInstruction = "You extract possible player-absence reports from supplied football publication evidence. Return ONLY valid JSON in this exact shape: {\\"reports\\":[{\\"playerNameAsWritten\\":string,\\"team\\":string,\\"reportedStatus\\":\\"reported_unavailable\\|doubtful_or_test_pending\\|availability_not_established\\",\\"reasonAsWritten\\":string,\\"evidenceId\\":string}]}. Never invent players, expand a surname into a full name, infer an injury, or use outside knowledge. playerNameAsWritten must be a literal player name or surname appearing in that article title/snippet. Only report a player if the evidence text names them. Use reported_unavailable only when the article explicitly says the player is ruled out, will miss the match, suspended, or unavailable; use doubtful_or_test_pending for uncertainty; otherwise availability_not_established. Do not treat a generic team injury headline as proof that every named player is absent. Team must be exactly one of the two supplied teams. If no player is named, return an empty reports array.";
+            const userContent = "Fixture: " + homeTeam + " vs " + awayTeam +
+                "\\nTeams allowed: " + JSON.stringify([homeTeam, awayTeam]) +
+                "\\nPublication evidence (search leads, not official confirmation):\\n" + JSON.stringify(articles);
+            try {
+                const aiResult = await requestGroqAnswer(systemInstruction, userContent, { maxTokens: 1400, timeoutMs: 25000, maxAttempts: 1 });
+                aiModel = aiResult.model;
+                const jsonText = aiResult.answer.replace(/^\`\`\`(?:json)?\\s*/i, "").replace(/\\s*\`\`\`$/, "").trim();
+                const parsed = JSON.parse(jsonText);
+                const allowedTeams = [homeTeam, awayTeam];
+                candidateReports = (Array.isArray(parsed.reports) ? parsed.reports : []).slice(0, 30).flatMap(report => {
+                    const evidence = articles.find(item => item.evidenceId === String(report.evidenceId || ""));
+                    const player = String(report.playerNameAsWritten || "").trim().slice(0, 100);
+                    const team = allowedTeams.find(name => name.toLowerCase() === String(report.team || "").trim().toLowerCase());
+                    if (!evidence || !player || !team) return [];
+                    const evidenceText = evidence.title + " " + evidence.snippet;
+                    // Hard guard: do not surface any player name the supplied article does not literally contain.
+                    if (!evidenceText.toLowerCase().includes(player.toLowerCase())) return [];
+                    const reportedStatus = ["reported_unavailable", "doubtful_or_test_pending", "availability_not_established"].includes(report.reportedStatus)
+                        ? report.reportedStatus : "availability_not_established";
+                    return [{
+                        player,
+                        team,
+                        reportedStatus,
+                        reason: String(report.reasonAsWritten || "").slice(0, 220),
+                        evidenceId: evidence.evidenceId,
+                        title: evidence.title,
+                        source: evidence.source,
+                        publishedAt: evidence.publishedAt,
+                        url: evidence.url,
+                        fixtureRelevance: evidence.fixtureRelevance,
+                        evidenceAssessment: evidence.availabilityAssessment
+                    }];
+                });
+                extractionStatus = "ai_extracted_candidates";
+            } catch (error) {
+                // Do not fail the whole absentee endpoint if AI is rate-limited; return publication evidence only.
+                console.warn("Absentee extraction fell back to evidence-only mode:", String(error.message || error).slice(0, 180));
+            }
+        }
+
+        const result = {
+            status: candidateReports.length ? "candidate_reports_found" : (articles.length ? "no_named_absentees_established" : "no_relevant_publication_evidence"),
+            fixture: { home: homeTeam, away: awayTeam },
+            generatedAt: new Date().toISOString(),
+            source: newsData.source || "selected football publication feeds",
+            providersAttempted: newsData.providersAttempted || [],
+            providerErrors: newsData.providerErrors || [],
+            articleCount: articles.length,
+            extractionStatus,
+            aiModel,
+            reports: candidateReports,
+            evidence: articles,
+            importantNotice: "These are publication-based candidate reports, not official team-sheet confirmation. Player names are returned only when literally present in the supplied article title/snippet. A report marked unavailable or doubtful must be checked against the original article, exact match date, and official club/league update. No prediction probabilities are changed by this endpoint."
+        };
+        absenteeReportCache.set(cacheKey, { expiresAt: Date.now() + ABSENTEE_REPORT_CACHE_TTL_MS, data: result });
+        return res.json(result);
+    } catch (error) {
+        console.error("Absentee intelligence request failed:", String(error.message || error).slice(0, 220));
+        return res.status(502).json({
+            status: "absentee_intelligence_unavailable",
+            error: "Football Genie could not prepare the absentee report. No player availability has been guessed."
+        });
+    }
+});
+
 // Groq is the primary AI provider for Football Genie.
 // Retry only transient provider/network failures once; never retry authentication or input errors.
 async function requestGroqAnswer(systemInstruction, userContent, options = {}) {
