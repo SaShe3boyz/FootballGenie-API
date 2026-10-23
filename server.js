@@ -1353,7 +1353,7 @@ app.get("/api/match-intelligence/news", async (req, res) => {
                     }
                 };
             }
-            return { provider: provider.name, xml: candidateXml };
+            return { provider: provider.name, xml: candidateXml, searchTeam: provider.searchTeam || null };
         } catch (error) {
             return {
                 provider: provider.name,
@@ -1374,8 +1374,8 @@ app.get("/api/match-intelligence/news", async (req, res) => {
             const matches = [...result.xml.matchAll(/<(?:[A-Za-z0-9_.-]+:)?item(?:\s[^>]*)?>([\s\S]*?)<\/(?:[A-Za-z0-9_.-]+:)?item>/gi)];
             return matches.map(match => {
                 const source = result.provider.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-                const searchTeamTag = result.provider.searchTeam
-                    ? "<searchteam>" + String(result.provider.searchTeam).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;") + "</searchteam>"
+                const searchTeamTag = result.searchTeam
+                    ? "<searchteam>" + String(result.searchTeam).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;") + "</searchteam>"
                     : "";
                 return "<item>" + match[1] + "<source>" + source + "</source>" + searchTeamTag + "</item>";
             });
