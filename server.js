@@ -1180,9 +1180,8 @@ app.get("/api/match-intelligence/news", async (req, res) => {
     if (homeTeam.length < 2 || awayTeam.length < 2 || homeTeam.toLowerCase() === awayTeam.toLowerCase()) {
         return res.status(400).json({ error: "Provide two different valid team names." });
     }
+
     const cacheKey = homeTeam.toLowerCase() + "|" + awayTeam.toLowerCase();
-    // forceRefresh=true bypasses the short cache for a deliberate fresh lookup.
-    // Prevent browsers and proxies from silently reusing old news responses.
     res.set("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
     res.set("Pragma", "no-cache");
     res.set("Expires", "0");
@@ -1203,130 +1202,178 @@ app.get("/api/match-intelligence/news", async (req, res) => {
     }
     res.set("X-Football-Genie-Cache", forceRefresh ? "BYPASS" : "MISS");
 
-    const query = '"' + homeTeam + '" "' + awayTeam + '" (injury OR injured OR unavailable OR suspension OR suspended OR lineup OR "team news" OR press conference) -women -"women\'s" -WSL -ladies when:30d';
-    const feedUrl = "https://news.google.com/rss/search?" + new URLSearchParams({
-        q: query, hl: "en", gl: "GB", ceid: "GB:en"
+    const query = '"' + homeTeam + '" "' + awayTeam +
+        '" (injury OR injured OR unavailable OR suspension OR suspended OR lineup OR "team news" OR press conference) -women -"women\'s" -WSL -ladies';
+    const googleUrl = "https://news.google.com/rss/search?" + new URLSearchParams({
+        q: query + " when:30d", hl: "en", gl: "GB", ceid: "GB:en"
+    }).toString();
+    const bingUrl = "https://www.bing.com/news/search?" + new URLSearchParams({
+        q: query, format: "rss"
     }).toString();
 
-    try {
-        const response = await fetch(feedUrl, {
-            headers: { "User-Agent": "FootballGenie/1.0 (football news discovery; RSS reader)", "Accept": "application/rss+xml, application/xml, text/xml" },
-            signal: AbortSignal.timeout(12000)
-        });
-        if (!response.ok) {
-            return res.status(502).json({ status: "news_provider_error", error: "Google News RSS could not be reached right now.", providerStatus: response.status });
-        }
-        const xml = await response.text();
-        if (!/<rss[\s>]/i.test(xml) || !/<item[\s>]/i.test(xml)) {
-            return res.status(502).json({ status: "news_provider_error", error: "Google News returned an unexpected feed format." });
-        }
-        const now = Date.now();
-        const maxAgeMs = FOOTBALL_NEWS_MAX_AGE_DAYS * 24 * 60 * 60 * 1000;
-        const parsedItems = [...xml.matchAll(/<item(?:\s[^>]*)?>([\s\S]*?)<\/item>/gi)].slice(0, 40).map(match => {
-            const block = match[1];
-            const title = newsXmlTag(block, "title");
-            const link = newsXmlTag(block, "link");
-            const publishedAt = newsXmlTag(block, "pubDate");
-            const description = newsXmlTag(block, "description").replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").slice(0, 500);
-            const source = newsXmlTag(block, "source");
-            const parsedDate = publishedAt ? new Date(publishedAt) : null;
-            const validDate = parsedDate && !Number.isNaN(parsedDate.getTime()) ? parsedDate : null;
-            const ageMs = validDate ? now - validDate.getTime() : null;
-            const lowerTitle = title.toLowerCase();
-            const mentionsHome = lowerTitle.includes(homeTeam.toLowerCase());
-            const mentionsAway = lowerTitle.includes(awayTeam.toLowerCase());
-            const mentionsBothTeams = mentionsHome && mentionsAway;
-            // Headlines about another fixture can still contain useful injury news,
-            // but should rank below reports clearly about the requested match.
-            const opponentMatch = title.match(/\b(?:vs?\.?|versus|against)\s+([A-Z][A-Za-z.'’-]*(?:\s+[A-Z][A-Za-z.'’-]*){0,2})/);
-            const namedOpponent = opponentMatch ? opponentMatch[1].trim() : "";
-            const targetNames = [homeTeam, awayTeam].map(name => name.toLowerCase());
-            const conflictingFixtureOpponent = Boolean(namedOpponent) &&
-                !targetNames.some(name => name === namedOpponent.toLowerCase() ||
-                    name.startsWith(namedOpponent.toLowerCase()) || namedOpponent.toLowerCase().startsWith(name));
-            const mentionsFixtureOpponent = Boolean(namedOpponent) ||
-                /\bagainst\s+[A-Z][A-Za-z.'’-]*/i.test(title);
-            const fixtureRelevance = mentionsBothTeams
-                ? "direct_fixture"
-                : (conflictingFixtureOpponent ? "other_fixture_excluded_from_analysis"
-                    : (mentionsFixtureOpponent ? "team_news_other_fixture_or_opponent_context" : "team_background_news"));
-            const womenContext = (title + " " + description + " " + source).toLowerCase();
-            const isWomensStory = /\b(women|women's|wsl|ladies|female team|women's super league|women's champions league)\b/i.test(womenContext);
-            // Reject obvious search pollution before it reaches the AI: finance/crypto,
-            // betting promotions, unrelated celebrity terms, and malformed SEO headlines.
-            const qualityText = (title + " " + description + " " + source).toLowerCase();
-            const hasSpamSignals = /\b(cathie wood|stock market|share price|cryptocurrency|crypto token|bitcoin|forex|casino|betting tips|odds boost|promo code|affiliate marketing|sponsored content)\b/i.test(qualityText);
-            const hasHeadlineNoise = /\b(click here|read more|live blog|live updates)\b/i.test(lowerTitle) ||
-                title.split(/\s+/).length < 4 || /(?:\|\s*){2,}|\.{4,}/.test(title);
-            const classification = classifyFootballNews(title, description);
-            let relevanceScore = (mentionsHome ? 2 : 0) + (mentionsAway ? 2 : 0);
-            if (mentionsBothTeams) relevanceScore += 4;
-            if (mentionsFixtureOpponent && !mentionsBothTeams) relevanceScore -= 2;
-            if (conflictingFixtureOpponent && !mentionsBothTeams) relevanceScore -= 8;
-            if (classification.categories.some(category => ["injury", "suspension", "lineup", "manager_comment"].includes(category))) relevanceScore += 2;
-            if (classification.categories.includes("unconfirmed_report")) relevanceScore += 1;
-            if (/official|confirmed|press conference|team news|injury update|suspended/.test(lowerTitle)) relevanceScore += 1;
-            if (isWomensStory) relevanceScore -= 5;
-            return {
-                title: title.slice(0, 300),
-                source: source.slice(0, 120) || "Source not identified",
-                publishedAt: validDate ? validDate.toISOString() : null,
-                ageDays: ageMs === null ? null : Math.max(0, Math.floor(ageMs / (24 * 60 * 60 * 1000))),
-                freshness: ageMs === null ? "date_unknown" : ageMs < 0 ? "future_date_check" : ageMs <= 7 * 24 * 60 * 60 * 1000 ? "fresh_7d" : ageMs <= maxAgeMs ? "recent_30d" : "stale",
-                snippet: description,
-                url: /^https?:\/\//i.test(link) ? link : null,
-                categories: classification.categories,
-                certainty: classification.certainty,
-                fixtureRelevance,
-                relevanceScore,
-                isWomensStory
-            };
-        }).filter(item => item.title && item.url && !item.isWomensStory &&
-            // Remove obvious unrelated/search-spam headlines before evidence ranking.
-            !/\b(cathie wood|stock market|share price|cryptocurrency|crypto token|bitcoin|forex|casino|betting tips|odds boost|promo code|affiliate marketing|sponsored content)\b/i.test(item.title + " " + item.snippet + " " + item.source) &&
-            !/\b(click here|read more|live blog|live updates)\b/i.test(item.title) &&
-            item.title.split(/\s+/).length >= 4 &&
-            !/(?:\|\s*){2,}|\.{4,}/.test(item.title) &&
-            // Unknown or future publication dates are not safe evidence for a current-match review.
-            item.publishedAt !== null && item.ageDays !== null && item.ageDays >= 0 &&
-            item.ageDays <= FOOTBALL_NEWS_MAX_AGE_DAYS &&
-            item.relevanceScore >= 3 &&
-            item.fixtureRelevance !== "other_fixture_excluded_from_analysis" &&
-            (item.title.toLowerCase().includes(homeTeam.toLowerCase()) || item.title.toLowerCase().includes(awayTeam.toLowerCase())) &&
-            item.categories.some(category => ["injury", "suspension", "lineup", "manager_comment"].includes(category)));
+    const providers = [
+        { name: "Google News RSS", url: googleUrl },
+        { name: "Bing News RSS", url: bingUrl }
+    ];
+    const providerErrors = [];
+    let xml = "";
+    let providerUsed = "";
 
-        parsedItems.sort((a, b) => b.relevanceScore - a.relevanceScore ||
-            ((a.ageDays === null ? 9999 : a.ageDays) - (b.ageDays === null ? 9999 : b.ageDays)));
-        const items = parsedItems.slice(0, 15).map(({ relevanceScore, isWomensStory, ...item }) => item);
-        const result = {
-            status: items.length ? "news_found" : "no_recent_relevant_articles",
-            source: "Google News RSS",
-            teams: { home: homeTeam, away: awayTeam },
-            searchedAt: new Date().toISOString(),
-            cache: {
-                status: "fresh",
-                fetchedAt: new Date().toISOString(),
-                ttlSeconds: Math.floor(FOOTBALL_NEWS_CACHE_TTL_MS / 1000),
-                forceRefreshAvailable: true
-            },
-            maxArticleAgeDays: FOOTBALL_NEWS_MAX_AGE_DAYS,
-            count: items.length,
-            articles: items,
-            importantNotice: "News items are search leads, not verified player-availability records. Headlines that clearly name a different opponent are excluded from the analysis feed to reduce cross-fixture contamination. This conservative filter may omit useful background reports. Articles with missing or future publication dates are excluded from the analysis feed. Freshness is based on the RSS publication date. Open the original source and verify the exact fixture, player, team, and availability before changing a prediction. 'Confirmed' is a wording signal, not independent verification. No results does not mean there are no injuries."
-        };
-        const fetchedAtMs = Date.now();
-        result.cache.fetchedAt = new Date(fetchedAtMs).toISOString();
-        footballNewsCache.set(cacheKey, {
-            expiresAt: fetchedAtMs + FOOTBALL_NEWS_CACHE_TTL_MS,
-            fetchedAtMs,
-            fetchedAt: result.cache.fetchedAt,
-            data: result
-        });
-        return res.json(result);
-    } catch (error) {
-        console.error("Football news RSS search failed:", error.message);
-        return res.status(502).json({ status: "news_provider_error", error: "Unable to retrieve football news right now. Please try again later." });
+    // Use the first healthy provider. A 429 or outage from one search provider
+    // must not stop Football Genie from trying the independent fallback.
+    for (const provider of providers) {
+        try {
+            const response = await fetch(provider.url, {
+                headers: {
+                    "User-Agent": "Mozilla/5.0 (compatible; FootballGenie/1.0; +https://github.com/SaShe3boyz/FootballGenie-API)",
+                    "Accept": "application/rss+xml, application/xml, text/xml"
+                },
+                signal: AbortSignal.timeout(9000)
+            });
+            if (!response.ok) {
+                providerErrors.push({ provider: provider.name, status: response.status });
+                continue;
+            }
+            const candidateXml = await response.text();
+            if (!/<rss[\s>]/i.test(candidateXml) || !/<item[\s>]/i.test(candidateXml)) {
+                providerErrors.push({ provider: provider.name, error: "unexpected_feed_format" });
+                continue;
+            }
+            xml = candidateXml;
+            providerUsed = provider.name;
+            break;
+        } catch (error) {
+            providerErrors.push({
+                provider: provider.name,
+                error: /timeout|abort/i.test(String(error && error.message || "")) ? "timeout" : "unavailable"
+            });
+        }
     }
+
+    // If every live provider is down or rate-limited, serve the last successful
+    // result when available, clearly marked stale instead of pretending it is fresh.
+    if (!xml) {
+        if (cached && cached.data) {
+            return res.json({
+                ...cached.data,
+                status: "stale_news_fallback",
+                providerErrors,
+                importantNotice: "Live news providers are currently unavailable or rate-limited. These are cached search leads, not verified player-availability records. Check the original sources before kickoff.",
+                cache: {
+                    status: "stale_fallback",
+                    fetchedAt: cached.fetchedAt,
+                    ageSeconds: Math.max(0, Math.floor((Date.now() - cached.fetchedAtMs) / 1000)),
+                    forceRefreshAvailable: true
+                }
+            });
+        }
+        return res.status(502).json({
+            status: "news_provider_error",
+            error: "Football news search providers are temporarily unavailable or rate-limited. Please try again later.",
+            providerErrors,
+            fallbackAttempted: true
+        });
+    }
+
+    const now = Date.now();
+    const maxAgeMs = FOOTBALL_NEWS_MAX_AGE_DAYS * 24 * 60 * 60 * 1000;
+    const parsedItems = [...xml.matchAll(/<item(?:\s[^>]*)?>([\s\S]*?)<\/item>/gi)].slice(0, 50).map(match => {
+        const block = match[1];
+        const title = newsXmlTag(block, "title");
+        const link = newsXmlTag(block, "link");
+        const publishedAt = newsXmlTag(block, "pubDate");
+        const description = newsXmlTag(block, "description").replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").slice(0, 500);
+        const source = newsXmlTag(block, "source") ||
+            ((block.match(/<(?:[A-Za-z0-9_-]+:)?Source(?:\s[^>]*)?>([\s\S]*?)<\/(?:[A-Za-z0-9_-]+:)?Source>/i) || [])[1]
+                ? decodeNewsXml((block.match(/<(?:[A-Za-z0-9_-]+:)?Source(?:\s[^>]*)?>([\s\S]*?)<\/(?:[A-Za-z0-9_-]+:)?Source>/i) || [])[1])
+                : "");
+        const parsedDate = publishedAt ? new Date(publishedAt) : null;
+        const validDate = parsedDate && !Number.isNaN(parsedDate.getTime()) ? parsedDate : null;
+        const ageMs = validDate ? now - validDate.getTime() : null;
+        const lowerTitle = title.toLowerCase();
+        const mentionsHome = lowerTitle.includes(homeTeam.toLowerCase());
+        const mentionsAway = lowerTitle.includes(awayTeam.toLowerCase());
+        const mentionsBothTeams = mentionsHome && mentionsAway;
+        const opponentMatch = title.match(/\b(?:vs?\.?|versus|against)\s+([A-Z][A-Za-z.'’-]*(?:\s+[A-Z][A-Za-z.'’-]*){0,2})/);
+        const namedOpponent = opponentMatch ? opponentMatch[1].trim() : "";
+        const targetNames = [homeTeam, awayTeam].map(name => name.toLowerCase());
+        const conflictingFixtureOpponent = Boolean(namedOpponent) &&
+            !targetNames.some(name => name === namedOpponent.toLowerCase() ||
+                name.startsWith(namedOpponent.toLowerCase()) || namedOpponent.toLowerCase().startsWith(name));
+        const mentionsFixtureOpponent = Boolean(namedOpponent) ||
+            /\bagainst\s+[A-Z][A-Za-z.'’-]*/i.test(title);
+        const fixtureRelevance = mentionsBothTeams
+            ? "direct_fixture"
+            : (conflictingFixtureOpponent ? "other_fixture_excluded_from_analysis"
+                : (mentionsFixtureOpponent ? "team_news_other_fixture_or_opponent_context" : "team_background_news"));
+        const textForChecks = (title + " " + description + " " + source).toLowerCase();
+        const isWomensStory = /\b(women|women's|wsl|ladies|female team|women's super league|women's champions league)\b/i.test(textForChecks);
+        const hasSpamSignals = /\b(cathie wood|stock market|share price|cryptocurrency|crypto token|bitcoin|forex|casino|betting tips|odds boost|promo code|affiliate marketing|sponsored content)\b/i.test(textForChecks);
+        const hasHeadlineNoise = /\b(click here|read more|live blog|live updates)\b/i.test(lowerTitle) ||
+            title.split(/\s+/).length < 4 || /(?:\|\s*){2,}|\.{4,}/.test(title);
+        const classification = classifyFootballNews(title, description);
+        let relevanceScore = (mentionsHome ? 2 : 0) + (mentionsAway ? 2 : 0);
+        if (mentionsBothTeams) relevanceScore += 4;
+        if (mentionsFixtureOpponent && !mentionsBothTeams) relevanceScore -= 2;
+        if (conflictingFixtureOpponent && !mentionsBothTeams) relevanceScore -= 8;
+        if (classification.categories.some(category => ["injury", "suspension", "lineup", "manager_comment"].includes(category))) relevanceScore += 2;
+        if (classification.categories.includes("unconfirmed_report")) relevanceScore += 1;
+        if (/official|confirmed|press conference|team news|injury update|suspended/.test(lowerTitle)) relevanceScore += 1;
+        if (isWomensStory) relevanceScore -= 5;
+        return {
+            title: title.slice(0, 300),
+            source: source.slice(0, 120) || "Source not identified",
+            publishedAt: validDate ? validDate.toISOString() : null,
+            ageDays: ageMs === null ? null : Math.max(0, Math.floor(ageMs / (24 * 60 * 60 * 1000))),
+            freshness: ageMs === null ? "date_unknown" : ageMs < 0 ? "future_date_check" : ageMs <= 7 * 24 * 60 * 60 * 1000 ? "fresh_7d" : ageMs <= maxAgeMs ? "recent_30d" : "stale",
+            snippet: description,
+            url: /^https?:\/\//i.test(link) ? link : null,
+            categories: classification.categories,
+            certainty: classification.certainty,
+            fixtureRelevance,
+            relevanceScore,
+            isWomensStory,
+            hasSpamSignals,
+            hasHeadlineNoise
+        };
+    }).filter(item => item.title && item.url && !item.isWomensStory &&
+        !item.hasSpamSignals && !item.hasHeadlineNoise &&
+        item.publishedAt !== null && item.ageDays !== null && item.ageDays >= 0 &&
+        item.ageDays <= FOOTBALL_NEWS_MAX_AGE_DAYS &&
+        item.relevanceScore >= 3 &&
+        item.fixtureRelevance !== "other_fixture_excluded_from_analysis" &&
+        (item.title.toLowerCase().includes(homeTeam.toLowerCase()) || item.title.toLowerCase().includes(awayTeam.toLowerCase())) &&
+        item.categories.some(category => ["injury", "suspension", "lineup", "manager_comment"].includes(category)));
+
+    parsedItems.sort((a, b) => b.relevanceScore - a.relevanceScore ||
+        ((a.ageDays === null ? 9999 : a.ageDays) - (b.ageDays === null ? 9999 : b.ageDays)));
+    const items = parsedItems.slice(0, 15).map(({ relevanceScore, isWomensStory, hasSpamSignals, hasHeadlineNoise, ...item }) => item);
+    const fetchedAtMs = Date.now();
+    const result = {
+        status: items.length ? "news_found" : "no_recent_relevant_articles",
+        source: providerUsed,
+        providersAttempted: providers.map(provider => provider.name),
+        providerErrors,
+        teams: { home: homeTeam, away: awayTeam },
+        searchedAt: new Date(fetchedAtMs).toISOString(),
+        cache: {
+            status: "fresh",
+            fetchedAt: new Date(fetchedAtMs).toISOString(),
+            ttlSeconds: Math.floor(FOOTBALL_NEWS_CACHE_TTL_MS / 1000),
+            forceRefreshAvailable: true
+        },
+        maxArticleAgeDays: FOOTBALL_NEWS_MAX_AGE_DAYS,
+        count: items.length,
+        articles: items,
+        importantNotice: "News items are search leads, not verified player-availability records. Headlines that clearly name a different opponent are excluded to reduce cross-fixture contamination. Articles with missing or future publication dates are excluded. Open the original source and verify the exact fixture, player, team, and availability before changing a prediction. 'Confirmed' is a wording signal, not independent verification. No results does not mean there are no injuries."
+    };
+    footballNewsCache.set(cacheKey, {
+        expiresAt: fetchedAtMs + FOOTBALL_NEWS_CACHE_TTL_MS,
+        fetchedAtMs,
+        fetchedAt: result.cache.fetchedAt,
+        data: result
+    });
+    return res.json(result);
 });
 
 // Groq is the primary AI provider for Football Genie.
