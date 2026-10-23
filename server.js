@@ -1684,7 +1684,21 @@ app.get("/api/match-intelligence/news", async (req, res) => {
             publisherUrlResolutionMethod: "matched_bing_news_headline",
             publisherUrlResolutionScore: Number(bestScore.toFixed(2)) };
     });
-    parsedItems.sort((a, b) => b.relevanceScore - a.relevanceScore ||
+    // Official club domains are primary; this is publisher priority, not proof of player status.
+    const isOfficialClubUrl = value => {
+        try {
+            const host = new URL(value || "").hostname.toLowerCase();
+            return host === "avfc.co.uk" || host.endsWith(".avfc.co.uk") ||
+                host === "mancity.com" || host.endsWith(".mancity.com");
+        } catch (_) { return false; }
+    };
+    parsedItems = parsedItems.map(item => ({
+        ...item,
+        officialClubSource: isOfficialClubUrl(item.url),
+        sourceTrustTier: isOfficialClubUrl(item.url) ? "official_club_website" : "secondary_publication"
+    }));
+    parsedItems.sort((a, b) => Number(b.officialClubSource) - Number(a.officialClubSource) ||
+        b.relevanceScore - a.relevanceScore ||
         ((a.ageDays === null ? 9999 : a.ageDays) - (b.ageDays === null ? 9999 : b.ageDays)));
     // Combine the two club-specific searches but remove duplicate headlines.
     // Keep a wider evidence pool so a single-team injury report is not crowded
@@ -1737,7 +1751,20 @@ app.get("/api/match-intelligence/news", async (req, res) => {
         fetchedAt: result.cache.fetchedAt,
         data: result
     });
-    return res.json(result);
+    if (/^(1|true|yes)$/i.test(String(req.query.internal || ""))) return res.json(result);
+    // Football Genie is the user-facing source; publisher URLs stay server-side.
+    return res.json({
+        ...result,
+        articles: result.articles.map(article => ({
+            ...article,
+            url: null,
+            sourceLabel: article.officialClubSource
+                ? "Football Genie • Official club source"
+                : "Football Genie • Football publication",
+            sourceLinkHidden: true
+        })),
+        importantNotice: "Football Genie prioritises official club websites and uses reputable football publications as supporting evidence. Publisher priority does not independently confirm current player availability."
+    });
 });
 
 // Use the configured primary AI provider with the same OpenAI fallback as the main AI chat.
@@ -1846,6 +1873,7 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
         newsUrl.searchParams.set("awayTeam", awayTeam);
         // Allow a deliberate diagnostic refresh to bypass both cache layers.
         newsUrl.searchParams.set("forceRefresh", forceRefresh ? "true" : "false");
+        newsUrl.searchParams.set("internal", "true");
         const newsResponse = await fetch(newsUrl, {
             headers: { "Accept": "application/json" },
             signal: AbortSignal.timeout(15000)
@@ -2270,7 +2298,34 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
             importantNotice: "These are publication-based candidate reports, not official team-sheet confirmation. Player names are returned only when literally present in the supplied article title/snippet. A report marked unavailable or doubtful must be checked against the original article, exact match date, and official club/league update. No prediction probabilities are changed by this endpoint."
         };
         absenteeReportCache.set(cacheKey, { expiresAt: Date.now() + ABSENTEE_REPORT_CACHE_TTL_MS, data: result });
-        return res.json(result);
+        const publicResult = {
+            ...result,
+            reports: result.reports.map(report => ({
+                ...report,
+                url: null,
+                sourceLabel: report.officialPublisherDomainMatch
+                    ? "Football Genie • Official club source"
+                    : "Football Genie • Football publication",
+                sourceLinkHidden: true
+            })),
+            evidence: result.evidence.map(item => ({
+                ...item,
+                url: null,
+                sourceLabel: item.officialClubSource
+                    ? "Football Genie • Official club source"
+                    : "Football Genie • Football publication",
+                sourceLinkHidden: true
+            })),
+            sourcePolicy: {
+                primary: "official_club_websites",
+                secondary: "football_publications",
+                userFacingSource: "Football Genie",
+                outboundPublisherLinksShown: false
+            },
+            importantNotice: "Football Genie prioritises official club information, with reputable football publications used as supporting leads. A headline or search result alone is not confirmation of current player availability. No prediction probabilities are changed by this endpoint."
+        };
+        absenteeReportCache.set(cacheKey, { expiresAt: Date.now() + ABSENTEE_REPORT_CACHE_TTL_MS, data: publicResult });
+        return res.json(publicResult);
     } catch (error) {
         console.error("Absentee intelligence request failed:", String(error.message || error).slice(0, 220));
         return res.status(502).json({
