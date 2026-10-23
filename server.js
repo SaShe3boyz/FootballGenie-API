@@ -1793,16 +1793,64 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
                 });
             });
         });
-        // Deduplicate repeated player mentions across syndicated headlines.
+        // Deduplicate syndicated mentions, including surname-only vs full-name versions.
+        // Keep the strongest evidence record: direct-fixture context first, then newest dated publication.
         const uniqueCandidateReports = [];
-        const seenCandidateKeys = new Set();
+        const samePlayerMention = (left, right) => {
+            const a = normalizeTeamName(left);
+            const b = normalizeTeamName(right);
+            return a === b || a.endsWith(" " + b) || b.endsWith(" " + a);
+        };
+        const evidenceStrength = report => {
+            const relevance = report.fixtureRelevance === "direct_fixture" ? 100
+                : report.fixtureRelevance === "team_news_other_fixture_or_opponent_context" ? 10 : 0;
+            const timestamp = report.publishedAt ? new Date(report.publishedAt).getTime() : 0;
+            return relevance + (Number.isFinite(timestamp) ? timestamp / 1e13 : 0);
+        };
         for (const report of candidateReports) {
-            const key = normalizeTeamName(report.team) + "|" + normalizeTeamName(report.player) + "|" + report.reportedStatus;
-            if (seenCandidateKeys.has(key)) continue;
-            seenCandidateKeys.add(key);
-            uniqueCandidateReports.push(report);
+            const duplicateIndex = uniqueCandidateReports.findIndex(existing =>
+                normalizeTeamName(existing.team) === normalizeTeamName(report.team) &&
+                existing.reportedStatus === report.reportedStatus &&
+                samePlayerMention(existing.player, report.player));
+            if (duplicateIndex < 0) {
+                uniqueCandidateReports.push(report);
+                continue;
+            }
+            const existing = uniqueCandidateReports[duplicateIndex];
+            const existingIsFullerName = normalizeTeamName(existing.player).split(" ").length >
+                normalizeTeamName(report.player).split(" ").length;
+            const reportIsFullerName = normalizeTeamName(report.player).split(" ").length >
+                normalizeTeamName(existing.player).split(" ").length;
+            const preferred = evidenceStrength(report) > evidenceStrength(existing) ? report : existing;
+            const name = reportIsFullerName ? report.player : existingIsFullerName ? existing.player : preferred.player;
+            uniqueCandidateReports[duplicateIndex] = {
+                ...preferred,
+                player: name,
+                duplicateEvidenceCount: Number(existing.duplicateEvidenceCount || 1) + 1,
+                evidenceVerification: {
+                    status: "unverified_publication_lead",
+                    originalSourceOpened: false,
+                    playerClubIndependentlyVerified: false,
+                    exactFixtureAvailabilityVerified: false,
+                    headlineOnly: true
+                }
+            };
         }
-        candidateReports = uniqueCandidateReports;
+        candidateReports = uniqueCandidateReports.map(report => ({
+            ...report,
+            evidenceVerification: report.evidenceVerification || {
+                status: "unverified_publication_lead",
+                originalSourceOpened: false,
+                playerClubIndependentlyVerified: false,
+                exactFixtureAvailabilityVerified: false,
+                headlineOnly: true
+            },
+            fixtureRelevanceGuidance: report.fixtureRelevance === "direct_fixture"
+                ? "Both requested teams appear in the headline; still verify the original source and player status."
+                : report.fixtureRelevance === "team_news_other_fixture_or_opponent_context"
+                    ? "Background or other-fixture context only; does not establish availability for this fixture."
+                    : "Team-background headline only; does not establish availability for this fixture."
+        }));
         if (candidateReports.length) extractionStatus = "literal_headline_candidates";
         if (articles.length && (process.env.GROQ_API_KEY || process.env.OPENAI_API_KEY)) {
             const systemInstruction = "You extract possible player-absence reports from supplied football publication evidence. Return only valid JSON with a top-level reports array. Each report must contain playerNameAsWritten, team, reportedStatus, reasonAsWritten, and evidenceId. reportedStatus must be one of reported_unavailable, doubtful_or_test_pending, or availability_not_established. Never invent players, expand a surname into a full name, infer an injury, or use outside knowledge. playerNameAsWritten must be a literal player name or surname appearing in that article title/snippet. Only report a player if the evidence text names them. Do not treat a generic team injury headline as proof that every named player is absent. Team must be exactly one of the two supplied teams. If no player is named, return an empty reports array.";
