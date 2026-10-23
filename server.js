@@ -1202,8 +1202,10 @@ app.get("/api/match-intelligence/news", async (req, res) => {
     }
     res.set("X-Football-Genie-Cache", forceRefresh ? "BYPASS" : "MISS");
 
-    const query = '"' + homeTeam + '" "' + awayTeam +
-        '" (injury OR injured OR unavailable OR suspension OR suspended OR lineup OR "team news" OR press conference) -women -"women\'s" -WSL -ladies';
+    // Search either team's availability news, not only articles mentioning both clubs.
+    // Most injury reports discuss one club and do not name its next opponent.
+    const query = '("' + homeTeam + '" OR "' + awayTeam +
+        '") (injury OR injured OR unavailable OR suspension OR suspended OR lineup OR "team news" OR press conference) -women -"women\'s" -WSL -ladies';
     const googleUrl = "https://news.google.com/rss/search?" + new URLSearchParams({
         q: query + " when:30d", hl: "en", gl: "GB", ceid: "GB:en"
     }).toString();
@@ -1216,12 +1218,14 @@ app.get("/api/match-intelligence/news", async (req, res) => {
         { name: "Bing News RSS", url: bingUrl }
     ];
     const providerErrors = [];
+    const providersAttempted = [];
     let xml = "";
     let providerUsed = "";
 
     // Use the first healthy provider. A 429 or outage from one search provider
     // must not stop Football Genie from trying the independent fallback.
     for (const provider of providers) {
+        providersAttempted.push(provider.name);
         try {
             const response = await fetch(provider.url, {
                 headers: {
@@ -1352,7 +1356,7 @@ app.get("/api/match-intelligence/news", async (req, res) => {
     const result = {
         status: items.length ? "news_found" : "no_recent_relevant_articles",
         source: providerUsed,
-        providersAttempted: providers.map(provider => provider.name),
+        providersAttempted,
         providerErrors,
         teams: { home: homeTeam, away: awayTeam },
         searchedAt: new Date(fetchedAtMs).toISOString(),
