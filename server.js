@@ -1959,6 +1959,63 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
             }
         }
 
+        // Resolve Google News wrapper URLs to their publisher destination when possible.
+        // A resolved destination is NOT proof that the article confirms player availability.
+        const googleNewsUrls = [...new Set(candidateReports
+            .map(report => report.url)
+            .filter(url => {
+                try {
+                    const host = new URL(url).hostname.toLowerCase();
+                    return (host === "news.google.com" || host.endsWith(".news.google.com"));
+                } catch (_) {
+                    return false;
+                }
+            }))].slice(0, 8);
+        const resolvedPublisherUrls = new Map();
+        await Promise.all(googleNewsUrls.map(async originalUrl => {
+            try {
+                const response = await fetch(originalUrl, {
+                    method: "GET",
+                    redirect: "follow",
+                    headers: { "Accept": "text/html,application/xhtml+xml" },
+                    signal: AbortSignal.timeout(4500)
+                });
+                const finalUrl = response.url;
+                const ok = response.ok;
+                if (response.body && typeof response.body.cancel === "function") {
+                    await response.body.cancel().catch(() => {});
+                }
+                if (!ok || !finalUrl) return;
+                const finalHost = new URL(finalUrl).hostname.toLowerCase();
+                if (finalHost !== "news.google.com" && !finalHost.endsWith(".news.google.com") &&
+                    /^https?:$/i.test(new URL(finalUrl).protocol)) {
+                    resolvedPublisherUrls.set(originalUrl, finalUrl);
+                }
+            } catch (_) {
+                // Keep the aggregator link if Google News cannot be resolved in time.
+            }
+        }));
+        candidateReports = candidateReports.map(report => {
+            const publisherUrl = resolvedPublisherUrls.get(report.url);
+            if (!publisherUrl) return report;
+            return {
+                ...report,
+                url: publisherUrl,
+                originalPublisherUrlResolved: true,
+                originalSourceUrlVerified: false,
+                sourceLinkType: "resolved_original_publisher_link_not_content_verified",
+                sourceVerificationGuidance: "The original publisher URL was resolved automatically, but the article content and player availability are still unverified. Open the article and confirm the named player, club, publication date, and exact fixture.",
+                evidenceVerification: {
+                    ...(report.evidenceVerification || {}),
+                    status: "unverified_publication_lead",
+                    originalSourceOpened: false,
+                    originalPublisherUrlResolved: true,
+                    playerClubIndependentlyVerified: false,
+                    exactFixtureAvailabilityVerified: false,
+                    headlineOnly: true
+                }
+            };
+        });
         const result = {
             status: candidateReports.length ? "candidate_reports_found" : (articles.length ? "no_named_absentees_established" : "no_relevant_publication_evidence"),
             fixture: { home: homeTeam, away: awayTeam },
