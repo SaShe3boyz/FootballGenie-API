@@ -1449,9 +1449,15 @@ app.get("/api/match-intelligence/analyze", async (req, res) => {
     const existingAnalysis = inFlightMatchAnalyses.get(analysisKey);
     if (existingAnalysis) {
         try {
-            const sharedPayload = await existingAnalysis;
+            const sharedResult = await existingAnalysis;
             res.set("X-Football-Genie-Request", "coalesced");
-            return res.json({ ...sharedPayload, requestCoalesced: true });
+            if (sharedResult && sharedResult.__httpStatus) {
+                return res.status(sharedResult.__httpStatus).json({
+                    ...sharedResult.payload,
+                    requestCoalesced: true
+                });
+            }
+            return res.json({ ...sharedResult, requestCoalesced: true });
         } catch (_) {
             return res.status(503).json({
                 status: "analysis_in_progress_failed",
@@ -1483,10 +1489,14 @@ app.get("/api/match-intelligence/analyze", async (req, res) => {
         });
         const newsData = await newsResponse.json().catch(() => ({}));
         if (!newsResponse.ok) {
-            return res.status(502).json({
+            const failurePayload = {
                 status: "news_unavailable",
                 error: "The news search could not be completed, so no evidence-based report was generated."
-            });
+            };
+            // Resolve the shared result as an HTTP failure too, so simultaneous
+            // callers receive the same outcome instead of waiting forever.
+            resolveAnalysis({ __httpStatus: 502, payload: failurePayload });
+            return res.status(502).json(failurePayload);
         }
         // Prefer direct-fixture evidence. Background reports are secondary and
         // must remain explicitly labelled; do not let a large pile of weak leads
