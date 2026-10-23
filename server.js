@@ -2011,9 +2011,9 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
                     const inner = [
                         "garturlreq",
                         [
-                            [["X", "X", ["X", "X"], null, null, 1, 1, "GB:en", null, 1,
+                            ["X", "X", ["X", "X"], null, null, 1, 1, "GB:en", null, 1,
                                 null, null, null, null, null, 0, 1],
-                                "X", "X", 1, [1, 1, 1], 1, 1, null, 0, 0, null, 0]
+                            "X", "X", 1, [1, 1, 1], 1, 1, null, 0, 0, null, 0
                         ],
                         item.articleId,
                         item.timestamp,
