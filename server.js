@@ -1408,6 +1408,20 @@ app.get("/api/match-intelligence/news", async (req, res) => {
         const hasHeadlineNoise = /\b(click here|read more|live blog|live updates)\b/i.test(lowerTitle) ||
             title.split(/\s+/).length < 4 || /(?:\|\s*){2,}|\.{4,}/.test(title);
         const classification = classifyFootballNews(title, description);
+        // Separate the strength of an availability claim from the broad news category.
+        // This is a wording-based triage signal, not independent confirmation.
+        const reportedUnavailable = /\b(ruled out|will miss|will not play|won't play|unavailable for|sidelined for|out for (?:the )?(?:match|game|fixture)|suspended for|banned for|serving a suspension)\b/i.test(textForChecks);
+        const reportedDoubtful = /\b(could miss|may miss|might miss|doubtful|a doubt|fitness test|late test|question mark over|being assessed|assess(?:ed|ment)?|hopes to be fit|race to be fit|not certain to play|uncertain to play|questionable)\b/i.test(textForChecks);
+        const availabilityAssessment = reportedUnavailable
+            ? "reported_unavailable_check_original_source"
+            : reportedDoubtful
+                ? "reported_doubtful_or_test_pending"
+                : "availability_not_established";
+        const availabilityGuidance = reportedUnavailable
+            ? "The article uses wording that reports unavailability; verify the player, match, date, and original source."
+            : reportedDoubtful
+                ? "The article suggests doubt or a pending fitness assessment; do not treat the player as confirmed absent."
+                : "This article does not establish whether a player is available or absent for this fixture.";
         // A manager quote is useful only when it discusses player availability,
         // fitness, selection, or suspension. Generic post-match comments must not
         // be presented as absentee evidence just because a team name appears.
@@ -1433,6 +1447,8 @@ app.get("/api/match-intelligence/news", async (req, res) => {
             url: /^https?:\/\//i.test(link) ? link : null,
             categories: classification.categories,
             certainty: classification.certainty,
+            availabilityAssessment,
+            availabilityGuidance,
             hasRelevantAvailabilitySignal,
             fixtureRelevance,
             relevanceScore,
