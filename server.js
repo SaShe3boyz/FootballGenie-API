@@ -1212,8 +1212,9 @@ app.get("/api/match-intelligence/news", async (req, res) => {
             const ageMs = validDate ? now - validDate.getTime() : null;
             const lowerTitle = title.toLowerCase();
             const mentionsHome = lowerTitle.includes(homeTeam.toLowerCase());
-            const mentionsAway = lowerTitle.inc            const womenContext = (title + " " + description + " " + source).toLowerCase();
-            const isWomensStory = /\\b(women|women's|wsl|ladies|female team|women's super league|women's champions league)\\b/i.test(womenContext);'s|wsl|ladies)\b/i.test(title);
+            const mentionsAway = lowerTitle.includes(awayTeam.toLowerCase());
+            const womenContext = (title + " " + description + " " + source).toLowerCase();
+            const isWomensStory = /\b(women|women's|wsl|ladies|female team|women's super league|women's champions league)\b/i.test(womenContext);
             const classification = classifyFootballNews(title, description);
             let relevanceScore = (mentionsHome ? 2 : 0) + (mentionsAway ? 2 : 0);
             if (classification.categories.some(category => ["injury", "suspension", "lineup", "manager_comment"].includes(category))) relevanceScore += 2;
