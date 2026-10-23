@@ -1978,7 +1978,15 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
         // garturlreq RPC. Keep this bounded and optional: unresolved links remain intact.
         const signatureResults = await Promise.all(googleNewsUrls.map(async originalUrl => {
             try {
-                const response = await fetch(originalUrl, {
+                // RSS article links can return feed-style responses without the
+                // signed article-page metadata. Use the normal article page for
+                // signature extraction, retaining originalUrl as the report key.
+                const lookupUrl = new URL(originalUrl);
+                if (lookupUrl.pathname.startsWith("/rss/articles/")) {
+                    lookupUrl.pathname = lookupUrl.pathname.replace("/rss/articles/", "/articles/");
+                }
+                lookupUrl.search = "";
+                const response = await fetch(lookupUrl.href, {
                     method: "GET",
                     redirect: "follow",
                     headers: {
@@ -1999,7 +2007,7 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
                 }
                 const signature = (html.match(/data-n-a-sg="([^"]+)"/) || [])[1];
                 const timestamp = (html.match(/data-n-a-ts="([^"]+)"/) || [])[1];
-                const pathname = new URL(originalUrl).pathname;
+                const pathname = lookupUrl.pathname;
                 const marker = "/articles/";
                 const markerIndex = pathname.indexOf(marker);
                 const articleId = markerIndex >= 0 ? pathname.slice(markerIndex + marker.length) : "";
