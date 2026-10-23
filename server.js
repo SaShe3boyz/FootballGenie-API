@@ -1252,6 +1252,12 @@ app.get("/api/match-intelligence/news", async (req, res) => {
                     : (mentionsFixtureOpponent ? "team_news_other_fixture_or_opponent_context" : "team_background_news"));
             const womenContext = (title + " " + description + " " + source).toLowerCase();
             const isWomensStory = /\b(women|women's|wsl|ladies|female team|women's super league|women's champions league)\b/i.test(womenContext);
+            // Reject obvious search pollution before it reaches the AI: finance/crypto,
+            // betting promotions, unrelated celebrity terms, and malformed SEO headlines.
+            const qualityText = (title + " " + description + " " + source).toLowerCase();
+            const hasSpamSignals = /\b(cathie wood|stock market|share price|cryptocurrency|crypto token|bitcoin|forex|casino|betting tips|odds boost|promo code|affiliate marketing|sponsored content)\b/i.test(qualityText);
+            const hasHeadlineNoise = /\b(click here|read more|live blog|live updates)\b/i.test(lowerTitle) ||
+                title.split(/\s+/).length < 4 || /(?:\|\s*){2,}|\.{4,}/.test(title);
             const classification = classifyFootballNews(title, description);
             let relevanceScore = (mentionsHome ? 2 : 0) + (mentionsAway ? 2 : 0);
             if (mentionsBothTeams) relevanceScore += 4;
@@ -1276,6 +1282,11 @@ app.get("/api/match-intelligence/news", async (req, res) => {
                 isWomensStory
             };
         }).filter(item => item.title && item.url && !item.isWomensStory &&
+            // Remove obvious unrelated/search-spam headlines before evidence ranking.
+            !/\b(cathie wood|stock market|share price|cryptocurrency|crypto token|bitcoin|forex|casino|betting tips|odds boost|promo code|affiliate marketing|sponsored content)\b/i.test(item.title + " " + item.snippet + " " + item.source) &&
+            !/\b(click here|read more|live blog|live updates)\b/i.test(item.title) &&
+            item.title.split(/\s+/).length >= 4 &&
+            !/(?:\|\s*){2,}|\.{4,}/.test(item.title) &&
             // Unknown or future publication dates are not safe evidence for a current-match review.
             item.publishedAt !== null && item.ageDays !== null && item.ageDays >= 0 &&
             item.ageDays <= FOOTBALL_NEWS_MAX_AGE_DAYS &&
