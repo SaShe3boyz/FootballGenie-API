@@ -1254,54 +1254,32 @@ app.get("/api/match-intelligence/news", async (req, res) => {
     // Official club pages are the preferred absentee source when a supported club
     // can be identified. Google News is used only to discover official-domain pages;
     // the returned item must still be checked at the club's original page.
-    const officialClubSources = [
+    const officialClubDomains = [
         {
-            team: homeTeam,
             aliases: ["aston villa", "aston villa fc"],
             domain: "avfc.co.uk",
             name: "Official Aston Villa website discovery"
         },
         {
-            team: homeTeam,
-            aliases: ["manchester city", "manchester city fc", "man city"],
-            domain: "mancity.com/news/mens",
-            name: "Official Manchester City website discovery"
-        },
-        {
-            team: awayTeam,
-            aliases: ["aston villa", "aston villa fc"],
-            domain: "avfc.co.uk",
-            name: "Official Aston Villa website discovery"
-        },
-        {
-            team: awayTeam,
             aliases: ["manchester city", "manchester city fc", "man city"],
             domain: "mancity.com/news/mens",
             name: "Official Manchester City website discovery"
         }
     ];
     const requestedTeams = [homeTeam, awayTeam];
-    const officialProviders = officialClubSources
-        .filter((entry, index, all) => {
-            const teamMatches = entry.aliases.some(alias =>
-                normalizeTeamName(alias) === normalizeTeamName(entry.team));
-            const requestedClub = requestedTeams.some(team =>
-                entry.aliases.some(alias => normalizeTeamName(alias) === normalizeTeamName(team)));
-            return teamMatches && requestedClub &&
-                all.findIndex(other => other.domain === entry.domain) === index;
-        })
-        .map(entry => {
-            const team = requestedTeams.find(name =>
-                entry.aliases.some(alias => normalizeTeamName(alias) === normalizeTeamName(name))) || entry.team;
-            const query = 'site:' + entry.domain + ' "' + team + '" (injury OR injured OR unavailable OR "team news" OR "fitness update" OR "ruled out" OR doubtful OR suspension)';
-            return {
-                name: entry.name,
-                url: teamGoogleUrl(query),
-                timeoutMs: 6500,
-                searchTeam: team,
-                officialPublisherDomain: entry.domain
-            };
-        });
+    const officialProviders = officialClubDomains.flatMap(entry => {
+        const team = requestedTeams.find(name =>
+            entry.aliases.some(alias => normalizeTeamName(alias) === normalizeTeamName(name)));
+        if (!team) return [];
+        const query = 'site:' + entry.domain + ' "' + team + '" (injury OR injured OR unavailable OR "team news" OR "fitness update" OR "ruled out" OR doubtful OR suspension)';
+        return [{
+            name: entry.name,
+            url: teamGoogleUrl(query),
+            timeoutMs: 6500,
+            searchTeam: team,
+            officialPublisherDomain: entry.domain
+        }];
+    });
     const providers = [
         { name: "Google News RSS - fixture", url: googleUrl, timeoutMs: 6500 },
         { name: "Google News RSS - home team", url: teamGoogleUrl(homeTeamQuery), timeoutMs: 6500, searchTeam: homeTeam },
