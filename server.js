@@ -1122,26 +1122,44 @@ app.get("/api/match-intelligence/injuries", async (req, res) => {
 });
 
 // Free-first football news discovery using Google News RSS. RSS results are leads, not proof of player availability.
-// This endpoint returns short metadata/snippets and original article links; it does not republish full articles.
+// Keep recent, team-relevant stories and label the evidence so the app can distinguish stale reports.
 const footballNewsCache = new Map();
 const FOOTBALL_NEWS_CACHE_TTL_MS = 10 * 60 * 1000;
+const FOOTBALL_NEWS_MAX_AGE_DAYS = 30;
 
 function decodeNewsXml(value) {
     return String(value || "")
-        .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1")
+        .replace(/<!\\[CDATA\\[([\\s\\S]*?)\\]\\]>/g, "$1")
         .replace(/&amp;/g, "&")
         .replace(/&quot;/g, '"')
         .replace(/&#39;|&apos;/g, "'")
         .replace(/&lt;/g, "<")
         .replace(/&gt;/g, ">")
-        .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(Number(n)))
+        .replace(/&#(\\d+);/g, (_, n) => String.fromCodePoint(Number(n)))
         .replace(/&#x([0-9a-f]+);/gi, (_, n) => String.fromCodePoint(parseInt(n, 16)))
         .trim();
 }
 
 function newsXmlTag(block, tag) {
-    const match = block.match(new RegExp("<" + tag + "(?:\\s[^>]*)?>([\\s\\S]*?)<\\/" + tag + ">", "i"));
+    const match = block.match(new RegExp("<" + tag + "(?:\\\\s[^>]*)?>([\\\\s\\\\S]*?)<\\\\/" + tag + ">", "i"));
     return match ? decodeNewsXml(match[1]) : "";
+}
+
+function classifyFootballNews(title, snippet) {
+    const text = (String(title || "") + " " + String(snippet || "")).toLowerCase();
+    const categories = [];
+    if (/injur|injured|injury|fitness|knock|hamstring|ankle|knee|recover|return to train|medical/.test(text)) categories.push("injury");
+    if (/suspend|suspension|red card|yellow-card ban|banned for/.test(text)) categories.push("suspension");
+    if (/line.?up|starting xi|starting eleven|team news|confirmed xi|confirmed line.?up|squad named/.test(text)) categories.push("lineup");
+    if (/manager|coach|press conference|arteta says|reveals|speaks ahead|comments/.test(text)) categories.push("manager_comment");
+    if (/predicted|prediction|preview|could miss|doubt|questionable|expected to/.test(text)) categories.push("unconfirmed_report");
+    if (!categories.length) categories.push("general");
+    const certainty = /confirmed|official|will miss|ruled out|suspended for|returns to training|back in training/.test(text)
+        ? "reported_as_confirmed_check_original_source"
+        : /could miss|doubt|questionable|predicted|expected to|fear|may miss|rumou?r/.test(text)
+            ? "unconfirmed_or_prediction"
+            : "not_established";
+    return { categories: [...new Set(categories)], certainty };
 }
 
 app.get("/api/match-intelligence/news", async (req, res) => {
@@ -1163,7 +1181,8 @@ app.get("/api/match-intelligence/news", async (req, res) => {
         return res.json(cached.data);
     }
 
-    const query = '"' + homeTeam + '" "' + awayTeam + '" (injury OR injured OR unavailable OR suspension OR suspended OR lineup OR "team news")';
+    // The date is also checked below because RSS can still return old stories.
+    const query = '"' + homeTeam + '" "' + awayTeam + '" (injury OR injured OR unavailable OR suspension OR suspended OR lineup OR "team news" OR press conference) when:30d';
     const feedUrl = "https://news.google.com/rss/search?" + new URLSearchParams({
         q: query,
         hl: "en",
@@ -1184,34 +1203,62 @@ app.get("/api/match-intelligence/news", async (req, res) => {
             });
         }
         const xml = await response.text();
-        if (!/<rss[\s>]/i.test(xml) || !/<item[\s>]/i.test(xml)) {
+        if (!/<rss[\\s>]/i.test(xml) || !/<item[\\s>]/i.test(xml)) {
             return res.status(502).json({ status: "news_provider_error", error: "Google News returned an unexpected feed format." });
         }
-        const items = [...xml.matchAll(/<item(?:\s[^>]*)?>([\s\S]*?)<\/item>/gi)].slice(0, 15).map(match => {
+        const now = Date.now();
+        const maxAgeMs = FOOTBALL_NEWS_MAX_AGE_DAYS * 24 * 60 * 60 * 1000;
+        const parsedItems = [...xml.matchAll(/<item(?:\\s[^>]*)?>([\\s\\S]*?)<\\/item>/gi)].slice(0, 40).map(match => {
             const block = match[1];
             const title = newsXmlTag(block, "title");
             const link = newsXmlTag(block, "link");
             const publishedAt = newsXmlTag(block, "pubDate");
-            const description = newsXmlTag(block, "description").replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").slice(0, 500);
+            const description = newsXmlTag(block, "description").replace(/<[^>]*>/g, " ").replace(/\\s+/g, " ").slice(0, 500);
             const source = newsXmlTag(block, "source");
             const parsedDate = publishedAt ? new Date(publishedAt) : null;
+            const validDate = parsedDate && !Number.isNaN(parsedDate.getTime()) ? parsedDate : null;
+            const ageMs = validDate ? now - validDate.getTime() : null;
+            const lowerTitle = title.toLowerCase();
+            const mentionsHome = lowerTitle.includes(homeTeam.toLowerCase());
+            const mentionsAway = lowerTitle.includes(awayTeam.toLowerCase());
+            const isWomensStory = /\\b(women|women's|wsl|ladies)\\b/i.test(title);
+            const classification = classifyFootballNews(title, description);
+            let relevanceScore = (mentionsHome ? 2 : 0) + (mentionsAway ? 2 : 0);
+            if (classification.categories.some(category => ["injury", "suspension", "lineup", "manager_comment"].includes(category))) relevanceScore += 2;
+            if (classification.categories.includes("unconfirmed_report")) relevanceScore += 1;
+            if (/official|confirmed|press conference|team news|injury update|suspended/.test(lowerTitle)) relevanceScore += 1;
+            if (isWomensStory) relevanceScore -= 5;
             return {
                 title: title.slice(0, 300),
                 source: source.slice(0, 120) || "Source not identified",
-                publishedAt: parsedDate && !Number.isNaN(parsedDate.getTime()) ? parsedDate.toISOString() : null,
+                publishedAt: validDate ? validDate.toISOString() : null,
+                ageDays: ageMs === null ? null : Math.max(0, Math.floor(ageMs / (24 * 60 * 60 * 1000))),
+                freshness: ageMs === null ? "date_unknown" : ageMs < 0 ? "future_date_check" : ageMs <= 7 * 24 * 60 * 60 * 1000 ? "fresh_7d" : ageMs <= maxAgeMs ? "recent_30d" : "stale",
                 snippet: description,
-                url: /^https?:\/\//i.test(link) ? link : null
+                url: /^https?:\\/\\//i.test(link) ? link : null,
+                categories: classification.categories,
+                certainty: classification.certainty,
+                relevanceScore,
+                isWomensStory
             };
-        }).filter(item => item.title && item.url);
+        }).filter(item => item.title && item.url && !item.isWomensStory &&
+            (item.ageDays === null || item.ageDays <= FOOTBALL_NEWS_MAX_AGE_DAYS) &&
+            item.relevanceScore >= 3 &&
+            (item.title.toLowerCase().includes(homeTeam.toLowerCase()) || item.title.toLowerCase().includes(awayTeam.toLowerCase())));
+
+        parsedItems.sort((a, b) => b.relevanceScore - a.relevanceScore ||
+            ((a.ageDays === null ? 9999 : a.ageDays) - (b.ageDays === null ? 9999 : b.ageDays)));
+        const items = parsedItems.slice(0, 15).map(({ relevanceScore, isWomensStory, ...item }) => item);
 
         const result = {
-            status: items.length ? "news_found" : "no_matching_articles",
+            status: items.length ? "news_found" : "no_recent_relevant_articles",
             source: "Google News RSS",
             teams: { home: homeTeam, away: awayTeam },
             searchedAt: new Date().toISOString(),
+            maxArticleAgeDays: FOOTBALL_NEWS_MAX_AGE_DAYS,
             count: items.length,
             articles: items,
-            importantNotice: "Search results are leads, not verified injury records. Check the original article, its date, player identity, team, and whether availability is confirmed. No results does not mean there are no injuries."
+            importantNotice: "News items are search leads, not verified player-availability records. Freshness is based on the RSS publication date. Open the original source and verify the exact fixture, player, team, and availability before changing a prediction. 'Confirmed' is a wording signal, not independent verification. No results does not mean there are no injuries."
         };
         footballNewsCache.set(cacheKey, { expiresAt: Date.now() + FOOTBALL_NEWS_CACHE_TTL_MS, data: result });
         return res.json(result);
