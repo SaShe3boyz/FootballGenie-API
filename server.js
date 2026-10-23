@@ -1544,6 +1544,56 @@ app.get("/api/match-intelligence/news", async (req, res) => {
     return res.json(result);
 });
 
+// Use the configured primary AI provider with the same OpenAI fallback as the main AI chat.
+async function requestAbsenteeAIAnswer(systemInstruction, userContent) {
+    let groqFailure = null;
+    if (process.env.GROQ_API_KEY) {
+        try {
+            const result = await requestGroqAnswer(systemInstruction, userContent, {
+                maxTokens: 1400, timeoutMs: 25000, maxAttempts: 1
+            });
+            return { ...result, provider: "groq" };
+        } catch (error) {
+            groqFailure = error;
+            console.warn("Absentee extraction Groq attempt failed; checking OpenAI fallback:",
+                String(error.message || error).slice(0, 160));
+        }
+    }
+    if (process.env.OPENAI_API_KEY) {
+        const model = process.env.OPENAI_MODEL || "gpt-4o-mini";
+        const response = await fetch("https://api.openai.com/v1/chat/completions", {
+            method: "POST",
+            headers: {
+                "Authorization": "Bearer " + process.env.OPENAI_API_KEY,
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+                model,
+                temperature: 0.1,
+                max_tokens: 1400,
+                messages: [
+                    { role: "system", content: systemInstruction },
+                    { role: "user", content: userContent }
+                ]
+            }),
+            signal: AbortSignal.timeout(22000)
+        });
+        const bodyText = await response.text();
+        let data;
+        try { data = JSON.parse(bodyText); }
+        catch (_) { throw new Error("OpenAI absentee extraction returned unreadable data."); }
+        if (!response.ok) {
+            throw new Error("OpenAI absentee extraction HTTP " + response.status + ".");
+        }
+        const answer = data.choices && data.choices[0] && data.choices[0].message
+            ? String(data.choices[0].message.content || "").trim() : "";
+        if (!answer) throw new Error("OpenAI returned an empty absentee extraction.");
+        return { answer, model, provider: "openai" };
+    }
+    if (groqFailure) throw groqFailure;
+    throw new Error("No AI provider is configured for absentee extraction.");
+}
+
 // Structured absentee-report endpoint. Publication headlines are leads, not official confirmation.
 const absenteeReportCache = new Map();
 const ABSENTEE_REPORT_CACHE_TTL_MS = 10 * 60 * 1000;
@@ -1598,14 +1648,16 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
         let candidateReports = [];
         let extractionStatus = "evidence_only";
         let aiModel = null;
-        if (articles.length && process.env.GROQ_API_KEY) {
+        let aiProvider = null;
+        if (articles.length && (process.env.GROQ_API_KEY || process.env.OPENAI_API_KEY)) {
             const systemInstruction = "You extract possible player-absence reports from supplied football publication evidence. Return only valid JSON with a top-level reports array. Each report must contain playerNameAsWritten, team, reportedStatus, reasonAsWritten, and evidenceId. reportedStatus must be one of reported_unavailable, doubtful_or_test_pending, or availability_not_established. Never invent players, expand a surname into a full name, infer an injury, or use outside knowledge. playerNameAsWritten must be a literal player name or surname appearing in that article title/snippet. Only report a player if the evidence text names them. Do not treat a generic team injury headline as proof that every named player is absent. Team must be exactly one of the two supplied teams. If no player is named, return an empty reports array.";
             const userContent = "Fixture: " + homeTeam + " vs " + awayTeam +
                 "\nTeams allowed: " + JSON.stringify([homeTeam, awayTeam]) +
                 "\nPublication evidence (search leads, not official confirmation):\n" + JSON.stringify(articles);
             try {
-                const aiResult = await requestGroqAnswer(systemInstruction, userContent, { maxTokens: 1400, timeoutMs: 25000, maxAttempts: 1 });
+                const aiResult = await requestAbsenteeAIAnswer(systemInstruction, userContent);
                 aiModel = aiResult.model;
+                aiProvider = aiResult.provider;
                 const answerText = aiResult.answer.trim();
                 const firstBrace = answerText.indexOf("{");
                 const lastBrace = answerText.lastIndexOf("}");
@@ -1658,6 +1710,7 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
             articleCount: articles.length,
             extractionStatus,
             aiModel,
+            aiProvider,
             reports: candidateReports,
             evidence: articles,
             importantNotice: "These are publication-based candidate reports, not official team-sheet confirmation. Player names are returned only when literally present in the supplied article title/snippet. A report marked unavailable or doubtful must be checked against the original article, exact match date, and official club/league update. No prediction probabilities are changed by this endpoint."
