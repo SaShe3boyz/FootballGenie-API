@@ -1457,7 +1457,7 @@ app.get("/api/match-intelligence/news", async (req, res) => {
         // Separate the strength of an availability claim from the broad news category.
         // This is a wording-based triage signal, not independent confirmation.
         const reportedDoubtful = /\b(could (?:be )?(?:out|sidelined|miss)|may (?:be )?(?:out|sidelined|miss)|might (?:be )?(?:out|sidelined|miss)|could miss|may miss|might miss|fear .*could|doubtful|a doubt|fitness test|late test|question mark over|being assessed|assess(?:ed|ment)?|hopes to be fit|race to be fit|not certain to play|uncertain to play|questionable|expected to miss|potentially unavailable)\b/i.test(textForChecks);
-        const reportedUnavailable = /\b(ruled out|will miss|will not play|won't play|unavailable for|(?:is|has been|will be) sidelined for|out for (?:the )?(?:match|game|fixture)|suspended for|banned for|serving a suspension)\b/i.test(textForChecks);
+        const reportedUnavailable = /\b(ruled out|will miss|will not play|won't play|unavailable for|(?:is|has been|will be) sidelined for|out for (?:the )?(?:match|game|fixture|\d+|one|two|three|four|five|six|seven|eight|nine|ten|several)(?:\s+(?:days?|weeks?|months?))?|suspended for|banned for|serving a suspension)\b/i.test(textForChecks);
         // Uncertainty takes precedence: "could be out" is not a confirmed absence.
         const availabilityAssessment = reportedDoubtful
             ? "reported_doubtful_or_test_pending"
