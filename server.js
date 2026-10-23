@@ -1250,10 +1250,63 @@ app.get("/api/match-intelligence/news", async (req, res) => {
     const teamGoogleUrl = teamQuery => "https://news.google.com/rss/search?" + new URLSearchParams({
         q: teamQuery + " when:30d", hl: "en", gl: "GB", ceid: "GB:en"
     }).toString();
+
+    // Official club pages are the preferred absentee source when a supported club
+    // can be identified. Google News is used only to discover official-domain pages;
+    // the returned item must still be checked at the club's original page.
+    const officialClubSources = [
+        {
+            team: homeTeam,
+            aliases: ["aston villa", "aston villa fc"],
+            domain: "avfc.co.uk",
+            name: "Official Aston Villa website discovery"
+        },
+        {
+            team: homeTeam,
+            aliases: ["manchester city", "manchester city fc", "man city"],
+            domain: "mancity.com/news/mens",
+            name: "Official Manchester City website discovery"
+        },
+        {
+            team: awayTeam,
+            aliases: ["aston villa", "aston villa fc"],
+            domain: "avfc.co.uk",
+            name: "Official Aston Villa website discovery"
+        },
+        {
+            team: awayTeam,
+            aliases: ["manchester city", "manchester city fc", "man city"],
+            domain: "mancity.com/news/mens",
+            name: "Official Manchester City website discovery"
+        }
+    ];
+    const requestedTeams = [homeTeam, awayTeam];
+    const officialProviders = officialClubSources
+        .filter((entry, index, all) => {
+            const teamMatches = entry.aliases.some(alias =>
+                normalizeTeamName(alias) === normalizeTeamName(entry.team));
+            const requestedClub = requestedTeams.some(team =>
+                entry.aliases.some(alias => normalizeTeamName(alias) === normalizeTeamName(team)));
+            return teamMatches && requestedClub &&
+                all.findIndex(other => other.domain === entry.domain) === index;
+        })
+        .map(entry => {
+            const team = requestedTeams.find(name =>
+                entry.aliases.some(alias => normalizeTeamName(alias) === normalizeTeamName(name))) || entry.team;
+            const query = 'site:' + entry.domain + ' "' + team + '" (injury OR injured OR unavailable OR "team news" OR "fitness update" OR "ruled out" OR doubtful OR suspension)';
+            return {
+                name: entry.name,
+                url: teamGoogleUrl(query),
+                timeoutMs: 6500,
+                searchTeam: team,
+                officialPublisherDomain: entry.domain
+            };
+        });
     const providers = [
         { name: "Google News RSS - fixture", url: googleUrl, timeoutMs: 6500 },
         { name: "Google News RSS - home team", url: teamGoogleUrl(homeTeamQuery), timeoutMs: 6500, searchTeam: homeTeam },
         { name: "Google News RSS - away team", url: teamGoogleUrl(awayTeamQuery), timeoutMs: 6500, searchTeam: awayTeam },
+        ...officialProviders,
         { name: "BBC Sport Football RSS", url: "https://feeds.bbci.co.uk/sport/football/rss.xml", timeoutMs: 6500 },
         { name: "Sky Sports Football RSS", url: "https://www.skysports.com/rss/11095", timeoutMs: 6500 },
         { name: "The Athletic Football RSS", url: "https://www.nytimes.com/athletic/rss/football/", timeoutMs: 6500 }
