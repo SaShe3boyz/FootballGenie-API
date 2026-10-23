@@ -1758,14 +1758,56 @@ app.post("/api/ai/analyze", async (req, res) => {
         });
 
     const systemInstruction = "You are Football Genie, powered by Groq when the Groq provider is configured. If asked which provider you use, answer Groq only when the request is being served by Groq; do not claim to know private infrastructure beyond that. You are a careful football-model analyst. Explain predictions using only the evidence provided. Separate observed data from model estimates. Do not invent injuries, line-ups, live match events, possession, shots, or external facts. Expected goals are estimates, not actual goals. If completed match history is supplied, compare predicted versus actual scores, identify recurring error patterns and suggest testable improvements, clearly noting small-sample limitations. You may recommend experiments but must never claim that you changed or trained the app's model. Explain uncertainty and avoid guarantees or betting certainty. If the evidence is insufficient, say what is missing. Keep the answer practical and readable on a phone.";
-    const userContent = "Question: " + prompt +
+    let userContent = "Question: " + prompt +
         "\nSaved validation report summary (user-provided app metrics):\n" + validationSummary +
         "\nMatch evidence (percentages are model probabilities, not live facts):\n" +
         JSON.stringify({ home, away, ...evidence }) +
         "\nCompleted saved predictions with actual scores (historical evidence only; newest first):\n" +
         JSON.stringify(completedHistory);
 
-    void logSystemEvent("ai_analysis_requested", "info", "AI analysis request received.", { questionLength: prompt.length });
+    // Connect the existing Android AI chat to the agreed free online-publication
+    // injury/news sources only when the user asks about availability or team news.
+    // These are reported leads, not verified injury records; never change probabilities.
+    const asksAboutAbsentees = /injur|absen|unavailab|suspend|suspension|team news|line.?up|missing player|fitness|who is out|who will miss|player availability/i.test(prompt);
+    let teamNewsEvidenceStatus = "not_requested";
+    if (asksAboutAbsentees && home !== "Home team" && away !== "Away team" &&
+        home.toLowerCase() !== away.toLowerCase()) {
+        teamNewsEvidenceStatus = "unavailable";
+        try {
+            const newsUrl = new URL("/api/match-intelligence/news", req.protocol + "://" + req.get("host"));
+            newsUrl.searchParams.set("homeTeam", home);
+            newsUrl.searchParams.set("awayTeam", away);
+            const newsResponse = await fetch(newsUrl, {
+                headers: { "Accept": "application/json" },
+                signal: AbortSignal.timeout(9000)
+            });
+            const newsData = await newsResponse.json().catch(() => ({}));
+            if (newsResponse.ok) {
+                const articles = (Array.isArray(newsData.articles) ? newsData.articles : []).slice(0, 8).map((article, index) => ({
+                    evidenceId: "N" + (index + 1),
+                    title: String(article.title || "").slice(0, 250),
+                    source: String(article.source || "").slice(0, 100),
+                    publishedAt: article.publishedAt || null,
+                    freshness: article.freshness || "date_unknown",
+                    categories: Array.isArray(article.categories) ? article.categories : [],
+                    certainty: article.certainty || "not_established",
+                    fixtureRelevance: article.fixtureRelevance || "not_classified",
+                    snippet: String(article.snippet || "").slice(0, 350),
+                    url: article.url || null
+                }));
+                teamNewsEvidenceStatus = articles.length ? "articles_found" : "no_articles_found";
+                userContent += "\nONLINE-PUBLICATION TEAM-NEWS EVIDENCE (search leads only; not independently verified):\n" +
+                    JSON.stringify({ status: newsData.status || "unknown", searchedAt: newsData.searchedAt || null, articles });
+            } else {
+                userContent += "\nONLINE-PUBLICATION TEAM-NEWS EVIDENCE: search failed; no live availability evidence is available for this request.";
+            }
+        } catch (newsError) {
+            userContent += "\nONLINE-PUBLICATION TEAM-NEWS EVIDENCE: search timed out or failed; do not guess current absentees.";
+        }
+        userContent += "\nTEAM-NEWS SAFETY RULE: Use only supplied article titles/snippets. Cite title/source/date/URL for each player-specific report. Distinguish direct-fixture news from background/other-fixture articles. Headlines are not proof of current club, diagnosis, or availability; call unconfirmed reports unconfirmed. If no relevant evidence exists, say so; absence of reports does not mean the squad is fully fit. Never invent names or change numerical probabilities.";
+    }
+
+    void logSystemEvent("ai_analysis_requested", "info", "AI analysis request received.", { questionLength: prompt.length, teamNewsEvidenceStatus });
     const recordAiFailure = (status, stage, providerHttpStatus, errorType, retryable) => {
         lastAiAnalysisFailure = {
             status, stage, providerHttpStatus: providerHttpStatus || null,
