@@ -1272,7 +1272,7 @@ app.get("/api/match-intelligence/news", async (req, res) => {
                 const itemsXml = articles.map(article => {
                     const rawDate = String(article.seendate || "");
                     const normalizedDate = rawDate.replace(
-                        /^(\\d{4})(\\d{2})(\\d{2})T(\\d{2})(\\d{2})(\\d{2})Z?$/,
+                        /^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z?$/,
                         "$1-$2-$3T$4:$5:$6Z"
                     );
                     const parsedDate = rawDate ? new Date(normalizedDate) : null;
