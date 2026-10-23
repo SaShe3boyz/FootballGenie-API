@@ -1152,6 +1152,36 @@ function newsXmlTag(block, tag) {
     const match = block.match(new RegExp("<(?:[A-Za-z0-9_.-]+:)?" + tag + "(?:\\s[^>]*)?>([\\s\\S]*?)<\\/(?:[A-Za-z0-9_.-]+:)?" + tag + ">", "i"));
     return match ? decodeNewsXml(match[1]) : "";
 }
+function footballTeamAliases(team) {
+    const normalized = normalizeTeamName(team);
+    const aliases = new Set([normalized]);
+    const aliasGroups = [
+        ["manchester city", "man city", "city"],
+        ["manchester united", "man utd", "man united"],
+        ["aston villa", "villa"],
+        ["tottenham hotspur", "tottenham", "spurs"],
+        ["west ham united", "west ham"],
+        ["newcastle united", "newcastle"],
+        ["nottingham forest", "nottm forest", "forest"],
+        ["brighton and hove albion", "brighton"],
+        ["wolverhampton wanderers", "wolves", "wolverhampton"],
+        ["leicester city", "leicester"],
+        ["crystal palace", "palace"],
+        ["ipswich town", "ipswich"]
+    ];
+    for (const group of aliasGroups) {
+        if (group.some(alias => normalizeTeamName(alias) === normalized)) {
+            group.forEach(alias => aliases.add(normalizeTeamName(alias)));
+        }
+    }
+    return [...aliases].filter(Boolean);
+}
+function textMentionsFootballTeam(text, team) {
+    const normalizedText = normalizeTeamName(text);
+    return footballTeamAliases(team).some(alias =>
+        alias && (" " + normalizedText + " ").includes(" " + alias + " "));
+}
+
 function classifyFootballNews(title, snippet) {
     const text = (String(title || "") + " " + String(snippet || "")).toLowerCase();
     const categories = [];
@@ -1399,10 +1429,12 @@ app.get("/api/match-intelligence/news", async (req, res) => {
         const contextMarker = /\b(?:vs?\.?|versus|against|ahead of|before|after|following|trip to|clash with|meeting with|showdown with|tie with|game against|match against|game with|match with)\b/i;
         const contextIndex = title.search(contextMarker);
         const headlineSubjectText = (contextIndex >= 0 ? title.slice(0, contextIndex) : title).toLowerCase();
-        const titleMentionsHome = lowerTitle.includes(homeTeam.toLowerCase());
-        const titleMentionsAway = lowerTitle.includes(awayTeam.toLowerCase());
-        const mentionsHome = headlineSubjectText.includes(homeTeam.toLowerCase());
-        const mentionsAway = headlineSubjectText.includes(awayTeam.toLowerCase());
+        // Publications often use short club names (e.g. "Man City") or identify
+        // the club in the publisher/source field rather than repeating it in the headline.
+        const titleMentionsHome = textMentionsFootballTeam(title + " " + source + " " + description, homeTeam);
+        const titleMentionsAway = textMentionsFootballTeam(title + " " + source + " " + description, awayTeam);
+        const mentionsHome = textMentionsFootballTeam(headlineSubjectText + " " + source, homeTeam);
+        const mentionsAway = textMentionsFootballTeam(headlineSubjectText + " " + source, awayTeam);
         const mentionsBothTeams = titleMentionsHome && titleMentionsAway;
         const hasTargetTeamAsSubject = mentionsHome || mentionsAway || mentionsBothTeams;
         const opponentPattern = /\b(?:vs?\.?|versus|against|ahead of|before|after|following|trip to|clash with|meeting with|showdown with|tie with|game against|match against|game with|match with)\s+([A-Z][A-Za-z.'’&-]*(?:\s+[A-Z][A-Za-z.'’&-]*){0,2})/g;
@@ -1655,6 +1687,34 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
         let extractionStatus = "evidence_only";
         let aiModel = null;
         let aiProvider = null;
+
+        // Deterministic fallback: extract only a literal name/surname at the start
+        // of a headline with explicit absence wording. Assign a club only when the
+        // same evidence/source explicitly identifies that club. This works without
+        // an AI key and never promotes generic team-news headlines into player claims.
+        const playerLeadPattern = /^\s*([A-Z][A-Za-z'’.-]{2,}(?:\s+[A-Z][A-Za-z'’.-]{2,})?)\s+(?:(?:is|has been|will be)\s+)?(?:ruled out|out\b|injured\b|sidelined\b|set to miss|will miss|to miss|a doubt\b|doubtful\b|faces .* injury|suffers? .* injury|suffers? .* knock)/i;
+        candidateReports = articles.flatMap(evidence => {
+            const status = evidence.availabilityAssessment === "reported_unavailable_check_original_source"
+                ? "reported_unavailable"
+                : evidence.availabilityAssessment === "reported_doubtful_or_test_pending"
+                    ? "doubtful_or_test_pending" : "availability_not_established";
+            if (status === "availability_not_established") return [];
+            const match = String(evidence.title || "").match(playerLeadPattern);
+            if (!match) return [];
+            const player = match[1].trim();
+            const evidenceText = [evidence.title, evidence.snippet, evidence.source].filter(Boolean).join(" ");
+            const team = [homeTeam, awayTeam].find(name => textMentionsFootballTeam(evidenceText, name));
+            if (!team) return [];
+            return [{
+                player, team, reportedStatus: status,
+                reason: String(evidence.title || "").slice(0, 220),
+                evidenceId: evidence.evidenceId, title: evidence.title, source: evidence.source,
+                publishedAt: evidence.publishedAt, url: evidence.url,
+                fixtureRelevance: evidence.fixtureRelevance,
+                evidenceAssessment: evidence.availabilityAssessment,
+                extractionMethod: "literal_headline_fallback"
+            }];
+        });
         if (articles.length && (process.env.GROQ_API_KEY || process.env.OPENAI_API_KEY)) {
             const systemInstruction = "You extract possible player-absence reports from supplied football publication evidence. Return only valid JSON with a top-level reports array. Each report must contain playerNameAsWritten, team, reportedStatus, reasonAsWritten, and evidenceId. reportedStatus must be one of reported_unavailable, doubtful_or_test_pending, or availability_not_established. Never invent players, expand a surname into a full name, infer an injury, or use outside knowledge. playerNameAsWritten must be a literal player name or surname appearing in that article title/snippet. Only report a player if the evidence text names them. Do not treat a generic team injury headline as proof that every named player is absent. Team must be exactly one of the two supplied teams. If no player is named, return an empty reports array.";
             const userContent = "Fixture: " + homeTeam + " vs " + awayTeam +
@@ -1702,6 +1762,9 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
                         evidenceAssessment: evidence.availabilityAssessment
                     }];
                 });
+                // AI extraction is an enhancement; preserve safe literal candidates
+                // if AI is absent or returns no usable names.
+                candidateReports = candidateReports.length ? candidateReports : [];
                 extractionStatus = "ai_extracted_candidates";
             } catch (error) {
                 // Do not fail the whole absentee endpoint if AI is rate-limited; return publication evidence only.
