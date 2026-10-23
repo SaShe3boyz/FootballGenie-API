@@ -1181,7 +1181,7 @@ app.get("/api/match-intelligence/news", async (req, res) => {
         return res.json(cached.data);
     }
 
-    const query = '"' + homeTeam + '" "' + awayTeam + '" (injury OR injured OR unavailable OR suspension OR suspended OR lineup OR "team news" OR press conference) when:30d';
+    const query = '"' + homeTeam + '" "' + awayTeam + '" (injury OR injured OR unavailable OR suspension OR suspended OR lineup OR "team news" OR press conference) -women -"women's" -WSL -ladies when:30d';
     const feedUrl = "https://news.google.com/rss/search?" + new URLSearchParams({
         q: query, hl: "en", gl: "GB", ceid: "GB:en"
     }).toString();
@@ -1212,8 +1212,8 @@ app.get("/api/match-intelligence/news", async (req, res) => {
             const ageMs = validDate ? now - validDate.getTime() : null;
             const lowerTitle = title.toLowerCase();
             const mentionsHome = lowerTitle.includes(homeTeam.toLowerCase());
-            const mentionsAway = lowerTitle.includes(awayTeam.toLowerCase());
-            const isWomensStory = /\b(women|women's|wsl|ladies)\b/i.test(title);
+            const mentionsAway = lowerTitle.inc            const womenContext = (title + " " + description + " " + source).toLowerCase();
+            const isWomensStory = /\\b(women|women's|wsl|ladies|female team|women's super league|women's champions league)\\b/i.test(womenContext);'s|wsl|ladies)\b/i.test(title);
             const classification = classifyFootballNews(title, description);
             let relevanceScore = (mentionsHome ? 2 : 0) + (mentionsAway ? 2 : 0);
             if (classification.categories.some(category => ["injury", "suspension", "lineup", "manager_comment"].includes(category))) relevanceScore += 2;
@@ -1236,7 +1236,8 @@ app.get("/api/match-intelligence/news", async (req, res) => {
         }).filter(item => item.title && item.url && !item.isWomensStory &&
             (item.ageDays === null || item.ageDays <= FOOTBALL_NEWS_MAX_AGE_DAYS) &&
             item.relevanceScore >= 3 &&
-            (item.title.toLowerCase().includes(homeTeam.toLowerCase()) || item.title.toLowerCase().includes(awayTeam.toLowerCase())));
+            (item.title.toLowerCase().includes(homeTeam.toLowerCase()) || item.title.toLowerCase().includes(awayTeam.toLowerCase())) &&
+            item.categories.some(category => ["injury", "suspension", "lineup", "manager_comment"].includes(category)));
 
         parsedItems.sort((a, b) => b.relevanceScore - a.relevanceScore ||
             ((a.ageDays === null ? 9999 : a.ageDays) - (b.ageDays === null ? 9999 : b.ageDays)));
