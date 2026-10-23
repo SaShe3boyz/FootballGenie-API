@@ -1238,10 +1238,10 @@ app.get("/api/match-intelligence/news", async (req, res) => {
     let xml = "";
     let providerUsed = "";
 
-    // Use the first healthy provider. RSS failures must not prevent trying the
-    // independent GDELT news index, which returns JSON rather than an RSS feed.
-    for (const provider of providers) {
-        providersAttempted.push(provider.name);
+    // Query providers concurrently so one slow publisher cannot make the entire
+    // endpoint exceed the mobile client's timeout. Keep provider order for selection.
+    providersAttempted.push(...providers.map(provider => provider.name));
+    const providerResults = await Promise.all(providers.map(async provider => {
         try {
             const response = await fetch(provider.url, {
                 headers: {
@@ -1252,8 +1252,7 @@ app.get("/api/match-intelligence/news", async (req, res) => {
             });
             const contentType = response.headers.get("content-type") || "";
             if (!response.ok) {
-                providerErrors.push({ provider: provider.name, status: response.status, contentType });
-                continue;
+                return { provider: provider.name, error: { provider: provider.name, status: response.status, contentType } };
             }
             const responseBody = await response.text();
             let candidateXml = responseBody;
@@ -1261,13 +1260,11 @@ app.get("/api/match-intelligence/news", async (req, res) => {
                 let gdeltData;
                 try { gdeltData = JSON.parse(responseBody); }
                 catch (_) {
-                    providerErrors.push({ provider: provider.name, error: "unexpected_json_format" });
-                    continue;
+                    return { provider: provider.name, error: { provider: provider.name, error: "unexpected_json_format", contentType } };
                 }
                 const articles = Array.isArray(gdeltData.articles) ? gdeltData.articles : [];
                 if (!articles.length) {
-                    providerErrors.push({ provider: provider.name, error: "no_articles_returned" });
-                    continue;
+                    return { provider: provider.name, error: { provider: provider.name, error: "no_articles_returned", contentType } };
                 }
                 const escapeXml = value => String(value || "").replace(/&/g, "&amp;").replace(/</g, "&lt;")
                     .replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&apos;");
@@ -1286,31 +1283,35 @@ app.get("/api/match-intelligence/news", async (req, res) => {
                 }).join("");
                 candidateXml = "<rss><channel>" + itemsXml + "</channel></rss>";
             }
-            // Some publishers return feeds without the expected root wrapper; accept a
-            // recognizable RSS item or Atom entry, but reject HTML error/consent pages.
             const hasRssItems = /<item(?:\s[^>]*)?>[\s\S]*?<\/item>/i.test(candidateXml);
             const hasAtomEntries = /<entry(?:\s[^>]*)?>[\s\S]*?<\/entry>/i.test(candidateXml);
             const looksLikeFeed = (/<rss[\s>]/i.test(candidateXml) && hasRssItems) ||
-                (/<feed[\s>]/i.test(candidateXml) && hasAtomEntries) ||
-                hasRssItems || hasAtomEntries;
+                (/<feed[\s>]/i.test(candidateXml) && hasAtomEntries) || hasRssItems || hasAtomEntries;
             if (!looksLikeFeed) {
-                providerErrors.push({
+                return {
                     provider: provider.name,
-                    error: "unexpected_feed_format",
-                    contentType,
-                    bodyPreview: responseBody.replace(/\s+/g, " ").slice(0, 140)
-                });
-                continue;
+                    error: {
+                        provider: provider.name, error: "unexpected_feed_format", contentType,
+                        bodyPreview: responseBody.replace(/\s+/g, " ").slice(0, 140)
+                    }
+                };
             }
-            xml = candidateXml;
-            providerUsed = provider.name;
-            break;
+            return { provider: provider.name, xml: candidateXml };
         } catch (error) {
-            providerErrors.push({
+            return {
                 provider: provider.name,
-                error: /timeout|abort/i.test(String(error && error.message || "")) ? "timeout" : "unavailable"
-            });
+                error: {
+                    provider: provider.name,
+                    error: /timeout|abort/i.test(String(error && error.message || "")) ? "timeout" : "unavailable"
+                }
+            };
         }
+    }));
+    providerErrors.push(...providerResults.filter(result => result.error).map(result => result.error));
+    const selectedProvider = providerResults.find(result => result.xml);
+    if (selectedProvider) {
+        xml = selectedProvider.xml;
+        providerUsed = selectedProvider.provider;
     }
 
     // If every live provider is down or rate-limited, serve the last successful
