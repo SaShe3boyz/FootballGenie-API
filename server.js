@@ -1330,40 +1330,74 @@ app.get("/api/match-intelligence/news", async (req, res) => {
 });
 
 // Groq is the primary AI provider for Football Genie.
+// Retry only transient provider/network failures once; never retry authentication or input errors.
 async function requestGroqAnswer(systemInstruction, userContent, options = {}) {
     if (!process.env.GROQ_API_KEY) return null;
     const model = process.env.GROQ_MODEL || "openai/gpt-oss-120b";
     const maxTokens = Number.isFinite(options.maxTokens) ? options.maxTokens : 3000;
     const timeoutMs = Number.isFinite(options.timeoutMs) ? options.timeoutMs : 45000;
-    const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-        method: "POST",
-        headers: {
-            "Authorization": "Bearer " + process.env.GROQ_API_KEY,
-            "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-            model,
-            temperature: 0.2,
-            max_tokens: maxTokens,
-            messages: [
-                { role: "system", content: systemInstruction },
-                { role: "user", content: userContent }
-            ]
-        }),
-        signal: AbortSignal.timeout(timeoutMs)
-    });
-    const textBody = await response.text();
-    let data;
-    try { data = JSON.parse(textBody); }
-    catch (_) { throw new Error("Groq returned an unreadable response."); }
-    if (!response.ok) {
-        throw new Error("Groq HTTP " + response.status + ": " +
-            String(data.error && data.error.message || "provider request failed").slice(0, 220));
+    const maxAttempts = Number.isFinite(options.maxAttempts)
+        ? Math.max(1, Math.min(2, Math.floor(options.maxAttempts))) : 2;
+    let lastError;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        try {
+            const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+                method: "POST",
+                headers: {
+                    "Authorization": "Bearer " + process.env.GROQ_API_KEY,
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify({
+                    model,
+                    temperature: 0.2,
+                    max_tokens: maxTokens,
+                    messages: [
+                        { role: "system", content: systemInstruction },
+                        { role: "user", content: userContent }
+                    ]
+                }),
+                signal: AbortSignal.timeout(timeoutMs)
+            });
+            const textBody = await response.text();
+            let data;
+            try { data = JSON.parse(textBody); }
+            catch (_) {
+                const error = new Error("Groq returned an unreadable response.");
+                error.retryable = response.status >= 500 || response.status === 429;
+                throw error;
+            }
+
+            if (!response.ok) {
+                const error = new Error("Groq HTTP " + response.status + ": " +
+                    String(data.error && data.error.message || "provider request failed").slice(0, 220));
+                error.retryable = response.status === 429 || [500, 502, 503, 504].includes(response.status);
+                const retryAfter = Number(response.headers.get("retry-after"));
+                error.retryAfterMs = Number.isFinite(retryAfter) && retryAfter > 0
+                    ? Math.min(1500, retryAfter * 1000) : 500;
+                throw error;
+            }
+
+            const answer = data.choices && data.choices[0] && data.choices[0].message
+                ? String(data.choices[0].message.content || "").trim() : "";
+            if (!answer) throw new Error("Groq returned an empty answer.");
+            if (attempt > 1) console.warn("Groq request succeeded after retry", { attempt, model });
+            return { answer, model };
+        } catch (error) {
+            lastError = error;
+            const networkOrTimeout = !error.status &&
+                (error.name === "AbortError" || error.name === "TimeoutError" ||
+                 error.name === "TypeError" || error.cause);
+            const retryable = error.retryable === true || networkOrTimeout;
+            if (attempt >= maxAttempts || !retryable) break;
+            const delayMs = error.retryAfterMs || 500;
+            console.warn("Transient Groq failure; retrying once", {
+                attempt, delayMs, error: String(error.message || error).slice(0, 180)
+            });
+            await new Promise(resolve => setTimeout(resolve, delayMs));
+        }
     }
-    const answer = data.choices && data.choices[0] && data.choices[0].message
-        ? String(data.choices[0].message.content || "").trim() : "";
-    if (!answer) throw new Error("Groq returned an empty answer.");
-    return { answer, model };
+    throw lastError || new Error("Groq request failed.");
 }
 
 async function sendGroqFallback(res, systemInstruction, userContent, evidence) {
