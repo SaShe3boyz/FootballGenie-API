@@ -1245,8 +1245,15 @@ app.get("/api/match-intelligence/news", async (req, res) => {
     // Use only the selected news sources: Google News search plus established
     // football coverage from BBC Sport, Sky Sports and The Athletic. Providers
     // that repeatedly fail or return unsuitable results are intentionally excluded.
+    const homeTeamQuery = '(' + homeSearchNames + ') (injury OR injured OR unavailable OR suspension OR suspended OR "team news" OR "ruled out" OR "out for" OR "fitness update") -women -"women\'s" -WSL -ladies';
+    const awayTeamQuery = '(' + awaySearchNames + ') (injury OR injured OR unavailable OR suspension OR suspended OR "team news" OR "ruled out" OR "out for" OR "fitness update") -women -"women\'s" -WSL -ladies';
+    const teamGoogleUrl = teamQuery => "https://news.google.com/rss/search?" + new URLSearchParams({
+        q: teamQuery + " when:30d", hl: "en", gl: "GB", ceid: "GB:en"
+    }).toString();
     const providers = [
-        { name: "Google News RSS", url: googleUrl, timeoutMs: 6500 },
+        { name: "Google News RSS - fixture", url: googleUrl, timeoutMs: 6500 },
+        { name: "Google News RSS - home team", url: teamGoogleUrl(homeTeamQuery), timeoutMs: 6500, searchTeam: homeTeam },
+        { name: "Google News RSS - away team", url: teamGoogleUrl(awayTeamQuery), timeoutMs: 6500, searchTeam: awayTeam },
         { name: "BBC Sport Football RSS", url: "https://feeds.bbci.co.uk/sport/football/rss.xml", timeoutMs: 6500 },
         { name: "Sky Sports Football RSS", url: "https://www.skysports.com/rss/11095", timeoutMs: 6500 },
         { name: "The Athletic Football RSS", url: "https://www.nytimes.com/athletic/rss/football/", timeoutMs: 6500 }
@@ -1367,7 +1374,10 @@ app.get("/api/match-intelligence/news", async (req, res) => {
             const matches = [...result.xml.matchAll(/<(?:[A-Za-z0-9_.-]+:)?item(?:\s[^>]*)?>([\s\S]*?)<\/(?:[A-Za-z0-9_.-]+:)?item>/gi)];
             return matches.map(match => {
                 const source = result.provider.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-                return "<item>" + match[1] + "<source>" + source + "</source></item>";
+                const searchTeamTag = result.provider.searchTeam
+                    ? "<searchteam>" + String(result.provider.searchTeam).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;") + "</searchteam>"
+                    : "";
+                return "<item>" + match[1] + "<source>" + source + "</source>" + searchTeamTag + "</item>";
             });
         });
         if (feedItems.length) {
@@ -1419,6 +1429,7 @@ app.get("/api/match-intelligence/news", async (req, res) => {
         const publishedAt = newsXmlTag(block, "pubDate") || newsXmlTag(block, "published") || newsXmlTag(block, "updated");
         const description = (newsXmlTag(block, "description") || newsXmlTag(block, "summary") || newsXmlTag(block, "content"))
             .replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").slice(0, 500);
+        const searchTeam = newsXmlTag(block, "searchteam");
         const source = newsXmlTag(block, "source") ||
             newsXmlTag(block, "name") ||
             ((block.match(/<(?:[A-Za-z0-9_-]+:)?Source(?:\s[^>]*)?>([\s\S]*?)<\/(?:[A-Za-z0-9_-]+:)?Source>/i) || [])[1]
@@ -1495,6 +1506,7 @@ app.get("/api/match-intelligence/news", async (req, res) => {
         return {
             title: title.slice(0, 300),
             source: source.slice(0, 120) || "Source not identified",
+            searchTeam: searchTeam || null,
             publishedAt: validDate ? validDate.toISOString() : null,
             ageDays: ageMs === null ? null : Math.floor(ageMs / (24 * 60 * 60 * 1000)),
             freshness: ageMs === null ? "date_unknown" : ageMs < 0 ? "future_date_check" : ageMs <= 7 * 24 * 60 * 60 * 1000 ? "fresh_7d" : ageMs <= maxAgeMs ? "recent_30d" : "stale",
