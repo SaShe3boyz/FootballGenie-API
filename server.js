@@ -1599,14 +1599,14 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
         let extractionStatus = "evidence_only";
         let aiModel = null;
         if (articles.length && process.env.GROQ_API_KEY) {
-            const systemInstruction = "You extract possible player-absence reports from supplied football publication evidence. Return ONLY valid JSON in this exact shape: {\\"reports\\":[{\\"playerNameAsWritten\\":string,\\"team\\":string,\\"reportedStatus\\":\\"reported_unavailable\\|doubtful_or_test_pending\\|availability_not_established\\",\\"reasonAsWritten\\":string,\\"evidenceId\\":string}]}. Never invent players, expand a surname into a full name, infer an injury, or use outside knowledge. playerNameAsWritten must be a literal player name or surname appearing in that article title/snippet. Only report a player if the evidence text names them. Use reported_unavailable only when the article explicitly says the player is ruled out, will miss the match, suspended, or unavailable; use doubtful_or_test_pending for uncertainty; otherwise availability_not_established. Do not treat a generic team injury headline as proof that every named player is absent. Team must be exactly one of the two supplied teams. If no player is named, return an empty reports array.";
+            const systemInstruction = "You extract possible player-absence reports from supplied football publication evidence. Return only valid JSON with a top-level reports array. Each report must contain playerNameAsWritten, team, reportedStatus, reasonAsWritten, and evidenceId. reportedStatus must be one of reported_unavailable, doubtful_or_test_pending, or availability_not_established. Never invent players, expand a surname into a full name, infer an injury, or use outside knowledge. playerNameAsWritten must be a literal player name or surname appearing in that article title/snippet. Only report a player if the evidence text names them. Do not treat a generic team injury headline as proof that every named player is absent. Team must be exactly one of the two supplied teams. If no player is named, return an empty reports array.";
             const userContent = "Fixture: " + homeTeam + " vs " + awayTeam +
-                "\\nTeams allowed: " + JSON.stringify([homeTeam, awayTeam]) +
-                "\\nPublication evidence (search leads, not official confirmation):\\n" + JSON.stringify(articles);
+                "\nTeams allowed: " + JSON.stringify([homeTeam, awayTeam]) +
+                "\nPublication evidence (search leads, not official confirmation):\n" + JSON.stringify(articles);
             try {
                 const aiResult = await requestGroqAnswer(systemInstruction, userContent, { maxTokens: 1400, timeoutMs: 25000, maxAttempts: 1 });
                 aiModel = aiResult.model;
-                const jsonText = aiResult.answer.replace(/^\`\`\`(?:json)?\\s*/i, "").replace(/\\s*\`\`\`$/, "").trim();
+                const jsonText = aiResult.answer.trim().replace(new RegExp("^" + String.fromCharCode(96).repeat(3) + "(?:json)?\\s*", "i"), "").replace(new RegExp("\\s*" + String.fromCharCode(96).repeat(3) + "$"), "").trim();
                 const parsed = JSON.parse(jsonText);
                 const allowedTeams = [homeTeam, awayTeam];
                 candidateReports = (Array.isArray(parsed.reports) ? parsed.reports : []).slice(0, 30).flatMap(report => {
@@ -1615,15 +1615,15 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
                     const team = allowedTeams.find(name => name.toLowerCase() === String(report.team || "").trim().toLowerCase());
                     if (!evidence || !player || !team) return [];
                     const evidenceText = evidence.title + " " + evidence.snippet;
-                    // Hard guard: do not surface any player name the supplied article does not literally contain.
-                    if (!evidenceText.toLowerCase().includes(player.toLowerCase())) return [];
-                    const reportedStatus = ["reported_unavailable", "doubtful_or_test_pending", "availability_not_established"].includes(report.reportedStatus)
-                        ? report.reportedStatus : "availability_not_established";
-                    return [{
-                        player,
-                        team,
-                        reportedStatus,
-                        reason: String(report.reasonAsWritten || "").slice(0, 220),
+                    // Hard guards: player and assigned team must appear in the supplied evidence.
+                    if (!evidenceText.toLowerCase().includes(player.toLowerCase()) ||
+                        !evidenceText.toLowerCase().includes(team.toLowerCase())) return [];
+                    // Status comes from deterministic wording checks, not AI inference.
+                    const reportedStatus = evidence.availabilityAssessment === "reported_unavailable_check_original_source"
+                        ? "reported_unavailable"
+                        : evidence.availabilityAssessment === "reported_doubtful_or_test_pending"
+                            ? "doubtful_or_test_pending"
+                            : "availability_not_established";
                         evidenceId: evidence.evidenceId,
                         title: evidence.title,
                         source: evidence.source,
