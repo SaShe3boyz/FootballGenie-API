@@ -1723,10 +1723,10 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
         // the fixture/team, e.g. "Man City Injury News: Semenyo Out, O'Reilly Doubt".
         // Status is derived per named phrase so one doubtful player does not downgrade
         // a separate player explicitly reported out in the same headline.
-        const namedAvailabilityPattern = /((?:[A-Z][A-Za-z'’.-]{2,}(?:\\s+[A-Z][A-Za-z'’.-]{1,}){0,2})(?:\\s+(?:and|&)\\s+[A-Z][A-Za-z'’.-]{2,}(?:\\s+[A-Z][A-Za-z'’.-]{1,}){0,1})?)\\s+(?:(?:is|has been|will be)\\s+)?(ruled out|out\\b|injured\\b|sidelined\\b|set to miss|will miss|to miss|a doubt\\b|doubts?\\b|doubtful\\b|faces? .*? injury|suffers? .*? injury|suffers? .*? knock)/gi;
+        const namedAvailabilityPattern = /((?:[A-Z][A-Za-z'’.-]{2,}(?:\s+[A-Z][A-Za-z'’.-]{1,}){0,2})(?:\s+(?:and|&)\s+[A-Z][A-Za-z'’.-]{2,}(?:\s+[A-Z][A-Za-z'’.-]{1,}){0,1})?)\s+(?:(?:is|has been|will be)\s+)?(ruled out|out\b|injured\b|sidelined\b|set to miss|will miss|to miss|a doubt\b|doubts?\b|doubtful\b|faces? .*? injury|suffers? .*? injury|suffers? .*? knock)/gi;
         candidateReports = articles.flatMap(evidence => {
             const title = String(evidence.title || "");
-            const subjectMarker = /\\b(?:vs?\\.?|versus|against|ahead of|before|after|following|trip to|clash with|meeting with|showdown with|tie with|game against|match against|game with|match with)\\b/i;
+            const subjectMarker = /\b(?:vs?\.?|versus|against|ahead of|before|after|following|trip to|clash with|meeting with|showdown with|tie with|game against|match against|game with|match with)\b/i;
             const subjectEnd = title.search(subjectMarker);
             const articleSubject = (subjectEnd >= 0 ? title.slice(0, subjectEnd) : title).trim();
             const subjectTeams = [homeTeam, awayTeam].filter(name => textMentionsFootballTeam(articleSubject, name));
@@ -1735,10 +1735,10 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
             return matches.flatMap(match => {
                 const namesText = String(match[1] || "").trim();
                 const phrase = String(match[2] || "").toLowerCase();
-                const reportedStatus = /\\b(?:a doubt|doubts?|doubtful)\\b/.test(phrase)
+                const reportedStatus = /\b(?:a doubt|doubts?|doubtful)\b/.test(phrase)
                     ? "doubtful_or_test_pending"
                     : "reported_unavailable";
-                const players = namesText.split(/\\s+(?:and|&)\\s+/i).map(name => name.trim()).filter(Boolean);
+                const players = namesText.split(/\s+(?:and|&)\s+/i).map(name => name.trim()).filter(Boolean);
                 // Avoid treating team labels or generic editorial phrases as players.
                 return players.flatMap(player => {
                     if (!player || /^(?:man city|manchester city|aston villa|team news|injury news|latest|confirmed|predicted|lineup|line-up)$/i.test(player)) return [];
