@@ -1379,6 +1379,7 @@ app.get("/api/match-intelligence/analyze", async (req, res) => {
     if (!process.env.GROQ_API_KEY) {
         return res.status(503).json({ status: "ai_not_configured", error: "Groq AI is not configured on the server." });
     }
+    let failureStage = "news_fetch";
     try {
         const newsUrl = new URL("/api/match-intelligence/news", req.protocol + "://" + req.get("host"));
         newsUrl.searchParams.set("homeTeam", homeTeam);
@@ -1413,6 +1414,7 @@ app.get("/api/match-intelligence/analyze", async (req, res) => {
             "\nSearch status: " + String(newsData.status || "unknown") +
             "\nSearch time: " + String(newsData.searchedAt || "unknown") +
             "\nEvidence articles (unverified search leads; use article indexes and quote exact titles/snippets when naming players):\n" + JSON.stringify(articles);
+        failureStage = "groq_analysis";
         const result = await requestGroqAnswer(systemInstruction, userContent);
         void logSystemEvent("match_intelligence_report_created", "success", "News intelligence report generated.", {
             homeTeam, awayTeam, articleCount: articles.length, provider: "groq", model: result.model
@@ -1429,13 +1431,42 @@ app.get("/api/match-intelligence/analyze", async (req, res) => {
             importantNotice: "This AI report summarises news search leads; it does not independently verify availability. Open sources and confirm updates close to kickoff. No articles found does not mean there are no injuries."
         });
     } catch (error) {
-        console.error("Match intelligence analysis failed:", error.message);
+        const diagnostic = String(error && error.message || "unknown");
+        const providerRateLimited = /Groq HTTP 429|rate.?limit|too many requests/i.test(diagnostic);
+        const providerUnavailable = /Groq HTTP 5\d\d|timeout|timed out|abort/i.test(diagnostic);
+        console.error("Match intelligence analysis failed at " + failureStage + ":", diagnostic);
         void logSystemEvent("match_intelligence_report_failed", "warning", "News intelligence analysis failed.", {
-            error: String(error.message || "unknown").slice(0, 180)
+            stage: failureStage,
+            providerRateLimited,
+            error: diagnostic.slice(0, 180)
         });
+        if (providerRateLimited) {
+            res.set("Retry-After", "60");
+            return res.status(503).json({
+                status: "ai_rate_limited",
+                stage: failureStage,
+                retryable: true,
+                retryAfterSeconds: 60,
+                error: "Football Genie AI is temporarily rate-limited. Please wait about one minute before trying again."
+            });
+        }
+        if (providerUnavailable) {
+            res.set("Retry-After", "30");
+            return res.status(503).json({
+                status: "ai_temporarily_unavailable",
+                stage: failureStage,
+                retryable: true,
+                retryAfterSeconds: 30,
+                error: "Football Genie AI is temporarily unavailable or taking too long. Please try again shortly."
+            });
+        }
         return res.status(502).json({
             status: "analysis_failed",
-            error: "Football Genie could not complete the news analysis right now. Please try again later."
+            stage: failureStage,
+            retryable: true,
+            error: failureStage === "news_fetch"
+                ? "Football Genie could not retrieve the news evidence. Please try again later."
+                : "Football Genie could not complete the AI analysis. Please try again later."
         });
     }
 });
