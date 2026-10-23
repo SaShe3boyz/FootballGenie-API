@@ -967,6 +967,64 @@ app.get("/api/match-intelligence/resolve-fixture", async (req, res) => {
 // Use API-Football IDs here; IDs from football-data.org are not interchangeable.
 const injuryCache = new Map();
 const INJURY_CACHE_TTL_MS = 15 * 60 * 1000;
+// Diagnostic endpoint: verify API-Football fixture access without exposing provider credentials.
+app.get("/api/match-intelligence/provider-check", async (req, res) => {
+    const providerKey = process.env.API_FOOTBALL_API_KEY || process.env.APIFOOTBALL_API_KEY;
+    if (!providerKey) {
+        return res.status(503).json({
+            status: "not_configured",
+            error: "API-Football provider key is not configured.",
+            requiredEnvironmentVariable: "API_FOOTBALL_API_KEY"
+        });
+    }
+    const teamId = String(req.query.teamId || "42").trim();
+    const season = String(req.query.season || "2025").trim();
+    if (!/^\\d+$/.test(teamId) || !/^\\d{4}$/.test(season)) {
+        return res.status(400).json({ error: "teamId must be numeric and season must be a four-digit year." });
+    }
+    try {
+        const params = new URLSearchParams({ team: teamId, season });
+        const response = await fetch("https://v3.football.api-sports.io/fixtures?" + params.toString(), {
+            headers: { "x-apisports-key": providerKey },
+            signal: AbortSignal.timeout(12000)
+        });
+        const bodyText = await response.text();
+        let data;
+        try { data = JSON.parse(bodyText); }
+        catch (_) { return res.status(502).json({ status: "provider_error", error: "Provider returned unreadable data." }); }
+        if (!response.ok || (Array.isArray(data.errors) && data.errors.length)) {
+            return res.status(502).json({
+                status: "provider_error",
+                providerStatus: response.status,
+                errors: data.errors || [],
+                message: "API-Football could not verify fixture access for this query."
+            });
+        }
+        const fixtures = Array.isArray(data.response) ? data.response : [];
+        return res.json({
+            status: fixtures.length ? "fixtures_found" : "no_fixtures_returned",
+            source: "API-Football / API-Sports",
+            query: { teamId: Number(teamId), season: Number(season) },
+            count: fixtures.length,
+            sampleFixtures: fixtures.slice(0, 5).map(item => ({
+                fixtureId: item.fixture && item.fixture.id,
+                date: item.fixture && item.fixture.date,
+                status: item.fixture && item.fixture.status && item.fixture.status.short,
+                home: item.teams && item.teams.home && item.teams.home.name,
+                away: item.teams && item.teams.away && item.teams.away.name,
+                league: item.league && item.league.name
+            })),
+            providerErrors: data.errors || [],
+            interpretation: fixtures.length
+                ? "Fixture records are available. Their API-Football fixture IDs can be used to test fixture-specific injury records."
+                : "No fixture records were returned. Check provider coverage, season availability, and API plan limits before drawing conclusions."
+        });
+    } catch (error) {
+        console.error("API-Football provider check failed:", error.message);
+        return res.status(502).json({ status: "provider_error", error: "Could not reach the fixture provider." });
+    }
+});
+
 app.get("/api/match-intelligence/injuries", async (req, res) => {
     const providerKey = process.env.API_FOOTBALL_API_KEY || process.env.APIFOOTBALL_API_KEY;
     if (!providerKey) {
