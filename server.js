@@ -1692,7 +1692,7 @@ app.get("/api/match-intelligence/news", async (req, res) => {
         // repeat the club name or an explicit OUT/DOUBTFUL label. Keep them so the
         // absentee route can open the original page and inspect its actual text.
         const officialAvailabilityLanguage = /\b(injury|injured|injuries|fitness|team news|availability|unavailable|suspension|suspended|ruled out|doubtful|returns? to training|back in training)\b/i
-            .test(item.title + " " + item.snippet);
+            .test(item.title);
         const directOfficialTeamResult = isDirectOfficialClubUrlForDiscovery(item.url) &&
             item.searchTeam && [homeTeam, awayTeam].some(name =>
                 normalizeTeamName(name) === normalizeTeamName(item.searchTeam)) &&
@@ -2156,6 +2156,59 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
                 }
             };
         });
+        // Google News article redirects are frequently rate-limited from cloud hosts.
+        // Fallback: search Bing's web index for the exact official headline and accept only
+        // a result whose final URL belongs to that article's official club domain.
+        const officialDomainSearchDiagnostics = { attempted: 0, resolved: 0, rejectedNonOfficial: 0, errors: 0 };
+        const officialDomainSearchCandidates = articles.filter(article => {
+            if (!article.officialClubSource || !article.url || !/news\.google\.com/i.test(article.url)) return false;
+            try {
+                const host = new URL(article.publisherSourceUrl || "").hostname.toLowerCase();
+                return ["arsenal.com", "evertonfc.com", "mancity.com", "avfc.co.uk", "rbleipzig.com", "borussia.com"]
+                    .some(domain => host === domain || host.endsWith("." + domain));
+            } catch (_) { return false; }
+        }).slice(0, 8);
+        const normalizeOfficialHeadline = value => String(value || "").toLowerCase()
+            .replace(/[^a-z0-9]+/g, " ").trim().split(/\s+/).filter(token => token.length > 2);
+        await Promise.all(officialDomainSearchCandidates.map(async article => {
+            officialDomainSearchDiagnostics.attempted += 1;
+            try {
+                const publisherHost = new URL(article.publisherSourceUrl).hostname.toLowerCase();
+                const query = 'site:' + publisherHost + ' "' + String(article.title || "").replace(/"/g, " ") + '"';
+                const searchUrl = "https://www.bing.com/search?" + new URLSearchParams({ q: query, format: "rss" }).toString();
+                const response = await fetch(searchUrl, {
+                    headers: { "Accept": "application/rss+xml, application/xml, text/xml", "User-Agent": "Mozilla/5.0 (compatible; FootballGenie/1.0)" },
+                    signal: AbortSignal.timeout(5000)
+                });
+                if (!response.ok) { officialDomainSearchDiagnostics.errors += 1; return; }
+                const xml = await response.text();
+                const itemBlocks = [...xml.matchAll(/<(?:[A-Za-z0-9_.-]+:)?item(?:\s[^>]*)?>([\s\S]*?)<\/(?:[A-Za-z0-9_.-]+:)?item>/gi)].map(match => match[1]);
+                const sourceTokens = new Set(normalizeOfficialHeadline(article.title));
+                let best = null;
+                let bestScore = 0;
+                for (const block of itemBlocks) {
+                    const resultTitle = newsXmlTag(block, "title");
+                    const resultLink = newsXmlTag(block, "link");
+                    if (!resultTitle || !/^https?:\/\//i.test(resultLink)) continue;
+                    let resultHost = "";
+                    try { resultHost = new URL(resultLink).hostname.toLowerCase(); } catch (_) { continue; }
+                    if (!(resultHost === publisherHost || resultHost.endsWith("." + publisherHost))) {
+                        officialDomainSearchDiagnostics.rejectedNonOfficial += 1;
+                        continue;
+                    }
+                    const resultTokens = new Set(normalizeOfficialHeadline(resultTitle));
+                    const overlap = [...sourceTokens].filter(token => resultTokens.has(token)).length;
+                    const score = overlap / Math.max(sourceTokens.size, resultTokens.size, 1);
+                    if (score > bestScore) { bestScore = score; best = { url: resultLink, score }; }
+                }
+                if (best && best.score >= 0.45) {
+                    article.url = best.url;
+                    article.originalPublisherUrlResolved = true;
+                    article.publisherUrlResolutionMethod = "official_domain_exact_headline_search";
+                    officialDomainSearchDiagnostics.resolved += 1;
+                }
+            } catch (_) { officialDomainSearchDiagnostics.errors += 1; }
+        }));
         // Fetch the original official club page when the resolved URL is on a supported club domain.
         // Page text enriches evidence; it does not by itself confirm availability for this fixture.
         const officialPageFetchDiagnostics = { attempted: 0, fetched: 0, nonOfficialSkipped: 0, errors: 0 };
@@ -2468,6 +2521,7 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
             },
             resolverDiagnostics,
             officialPageFetchDiagnostics,
+            officialDomainSearchDiagnostics,
             articleCount: articles.length,
             extractionStatus,
             aiModel,
