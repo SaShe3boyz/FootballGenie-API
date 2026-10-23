@@ -1410,17 +1410,18 @@ app.get("/api/match-intelligence/news", async (req, res) => {
         const classification = classifyFootballNews(title, description);
         // Separate the strength of an availability claim from the broad news category.
         // This is a wording-based triage signal, not independent confirmation.
-        const reportedUnavailable = /\b(ruled out|will miss|will not play|won't play|unavailable for|sidelined for|out for (?:the )?(?:match|game|fixture)|suspended for|banned for|serving a suspension)\b/i.test(textForChecks);
-        const reportedDoubtful = /\b(could miss|may miss|might miss|doubtful|a doubt|fitness test|late test|question mark over|being assessed|assess(?:ed|ment)?|hopes to be fit|race to be fit|not certain to play|uncertain to play|questionable)\b/i.test(textForChecks);
-        const availabilityAssessment = reportedUnavailable
-            ? "reported_unavailable_check_original_source"
-            : reportedDoubtful
-                ? "reported_doubtful_or_test_pending"
+        const reportedDoubtful = /\b(could (?:be )?(?:out|sidelined|miss)|may (?:be )?(?:out|sidelined|miss)|might (?:be )?(?:out|sidelined|miss)|could miss|may miss|might miss|fear .*could|doubtful|a doubt|fitness test|late test|question mark over|being assessed|assess(?:ed|ment)?|hopes to be fit|race to be fit|not certain to play|uncertain to play|questionable|expected to miss|potentially unavailable)\b/i.test(textForChecks);
+        const reportedUnavailable = /\b(ruled out|will miss|will not play|won't play|unavailable for|(?:is|has been|will be) sidelined for|out for (?:the )?(?:match|game|fixture)|suspended for|banned for|serving a suspension)\b/i.test(textForChecks);
+        // Uncertainty takes precedence: "could be out" is not a confirmed absence.
+        const availabilityAssessment = reportedDoubtful
+            ? "reported_doubtful_or_test_pending"
+            : reportedUnavailable
+                ? "reported_unavailable_check_original_source"
                 : "availability_not_established";
-        const availabilityGuidance = reportedUnavailable
-            ? "The article uses wording that reports unavailability; verify the player, match, date, and original source."
-            : reportedDoubtful
-                ? "The article suggests doubt or a pending fitness assessment; do not treat the player as confirmed absent."
+        const availabilityGuidance = reportedDoubtful
+            ? "The article suggests doubt or a pending fitness assessment; do not treat the player as confirmed absent."
+            : reportedUnavailable
+                ? "The article uses wording that reports unavailability; verify the player, match, date, and original source."
                 : "This article does not establish whether a player is available or absent for this fixture.";
         // A manager quote is useful only when it discusses player availability,
         // fitness, selection, or suspension. Generic post-match comments must not
