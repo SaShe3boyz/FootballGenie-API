@@ -2391,6 +2391,26 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
             const subjectTeams = [homeTeam, awayTeam].filter(name => textMentionsFootballTeam(articleSubject, name));
             const teamFromSubject = subjectTeams.length === 1 ? subjectTeams[0] : null;
             const matches = [...availabilityText.matchAll(namedAvailabilityPattern)];
+            // Some official updates phrase absence before the player's name ("will be without Saka").
+            const reverseAbsencePattern = /\b(?:will be without|will not have|will be missing|is without)\s+((?:[A-Z][A-Za-z'’.-]{2,}(?:\s+[A-Z][A-Za-z'’.-]{1,}){0,2}))/gi;
+            for (const reverseMatch of availabilityText.matchAll(reverseAbsencePattern)) {
+                const synthetic = [];
+                synthetic[0] = reverseMatch[0];
+                synthetic[1] = String(reverseMatch[1] || "").trim();
+                synthetic[2] = "ruled out";
+                synthetic.index = reverseMatch.index;
+                matches.push(synthetic);
+            }
+            // Catch official manager wording that a named player is still short of fitness.
+            const fitnessConcernPattern = /((?:[A-Z][A-Za-z'’.-]{2,}(?:\s+[A-Z][A-Za-z'’.-]{1,}){0,2}))[^.]{0,300}(?:a little bit further away than we hoped|not back fully firing|not fully fit|short of match fitness|needs? more game time)/gi;
+            for (const concernMatch of availabilityText.matchAll(fitnessConcernPattern)) {
+                const synthetic = [];
+                synthetic[0] = concernMatch[0];
+                synthetic[1] = String(concernMatch[1] || "").trim();
+                synthetic[2] = "a doubt";
+                synthetic.index = concernMatch.index;
+                matches.push(synthetic);
+            }
             return matches.flatMap(match => {
                 const namesText = String(match[1] || "").trim();
                 const phrase = String(match[2] || "").toLowerCase();
@@ -2405,7 +2425,16 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
                     // Headlines also use capitalized medical terms immediately before "doubt"
                     // (e.g. "Back Doubt", "Calf Doubt", "injury doubts"). These are not player names.
                     if (!player || /^(?:man city|manchester city|aston villa|team news|injury news|injury|injuries|back|calf|hamstring|knee|ankle|muscle|fitness|latest|confirmed|predicted|lineup|line-up|return|doubt|doubts|update|updates|status|test|training|available|unavailable)$/i.test(player)) return [];
-                    const team = teamFromSubject || (evidence.searchTeam &&
+                    const contextStart = Math.max(0, Number(match.index || 0) - 260);
+                    const localContext = availabilityText.slice(contextStart, Number(match.index || 0) + String(match[0] || "").length).toLowerCase();
+                    const contextualTeam = [homeTeam, awayTeam].map(name => ({
+                        name,
+                        lastMention: Math.max(
+                            localContext.lastIndexOf(normalizeTeamName(name)),
+                            localContext.lastIndexOf(normalizeTeamName(name).replace(/\s+/g, " "))
+                        )
+                    })).filter(item => item.lastMention >= 0).sort((a, b) => b.lastMention - a.lastMention)[0];
+                    const team = teamFromSubject || (contextualTeam && contextualTeam.name) || (evidence.searchTeam &&
                         [homeTeam, awayTeam].find(name => normalizeTeamName(name) === normalizeTeamName(evidence.searchTeam)));
                     if (!team) return [];
                     const freshness = assessAbsenteePublicationFreshness(evidence.publishedAt);
