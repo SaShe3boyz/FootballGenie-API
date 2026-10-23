@@ -1419,11 +1419,15 @@ app.get("/api/match-intelligence/news", async (req, res) => {
             const looksLikeFeed = (/<rss[\s>]/i.test(candidateXml) && hasRssItems) ||
                 (/<feed[\s>]/i.test(candidateXml) && hasAtomEntries) || hasRssItems || hasAtomEntries;
             if (!looksLikeFeed) {
+                const emptyBingNewsFeed = provider.name.startsWith("Bing News RSS") &&
+                    /<rss[\s>]/i.test(candidateXml) && !hasRssItems;
                 return {
                     provider: provider.name,
                     error: {
-                        provider: provider.name, error: "unexpected_feed_format", contentType,
-                        bodyPreview: responseBody.replace(/\s+/g, " ").slice(0, 140)
+                        provider: provider.name,
+                        error: emptyBingNewsFeed ? "no_items_returned" : "unexpected_feed_format",
+                        contentType,
+                        ...(emptyBingNewsFeed ? {} : { bodyPreview: responseBody.replace(/\s+/g, " ").slice(0, 140) })
                     }
                 };
             }
