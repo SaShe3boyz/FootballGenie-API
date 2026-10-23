@@ -1939,7 +1939,7 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
         const nonOfficialArticlesIgnored = rawNewsArticles.filter(article =>
             article.officialClubSource !== true && article.sourceTrustTier !== "official_club_website"
         ).length;
-        const articles = rawNewsArticles
+        let articles = rawNewsArticles
             .filter(article => article.officialClubSource === true || article.sourceTrustTier === "official_club_website")
             .slice(0, 30).map((article, index) => ({
             evidenceId: "E" + (index + 1),
@@ -1959,6 +1959,231 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
             fixtureRelevance: article.fixtureRelevance || "team_background_news"
         }));
 
+        // Resolve official-source article URLs before extraction, not only after a headline
+        // happens to yield a named-player candidate. This fixes the dead-end where useful
+        // official injury updates were found but never opened because their headlines named
+        // an injury rather than an explicit OUT/DOUBTFUL status.
+        // Resolve Google News wrapper URLs to their publisher destination when possible.
+        // A resolved destination is NOT proof that the article confirms player availability.
+        const googleNewsUrls = [...new Set(articles
+            .map(report => report.url)
+            .filter(url => {
+                try {
+                    const host = new URL(url).hostname.toLowerCase();
+                    return (host === "news.google.com" || host.endsWith(".news.google.com"));
+                } catch (_) {
+                    return false;
+                }
+            }))].slice(0, 8);
+        const resolvedPublisherUrls = new Map();
+        const resolverDiagnostics = { googleNewsUrlCount: googleNewsUrls.length, pageFetchSuccessCount: 0, pageFetchNonOkStatuses: [], pageFetchMissingUrlCount: 0, directRedirectCount: 0, signatureExtractedCount: 0, signatureMissingCount: 0, pageFetchErrorCount: 0, pageFetchErrorKinds: [], rpcAttempted: false, rpcHttpStatus: null, rpcErrorKind: null, rpcResponseLength: 0, rpcRowsParsed: 0, rpcAcceptedRows: 0, publisherDestinationsExtracted: 0, resolvedPublisherUrlCount: 0 };
+
+        // Google News no longer reliably redirects RSS article links to publishers.
+        // Its current flow requires a per-article signature followed by one batched
+        // garturlreq RPC. Keep this bounded and optional: unresolved links remain intact.
+        const signatureResults = await Promise.all(googleNewsUrls.map(async originalUrl => {
+            try {
+                // RSS article links can return feed-style responses without the
+                // signed article-page metadata. Use the normal article page for
+                // signature extraction, retaining originalUrl as the report key.
+                const lookupUrl = new URL(originalUrl);
+                if (lookupUrl.pathname.startsWith("/rss/articles/")) {
+                    lookupUrl.pathname = lookupUrl.pathname.replace("/rss/articles/", "/articles/");
+                }
+                lookupUrl.search = "";
+                const response = await fetch(lookupUrl.href, {
+                    method: "GET",
+                    redirect: "follow",
+                    headers: {
+                        "Accept": "text/html,application/xhtml+xml",
+                        "Accept-Language": "en-US,en;q=0.9",
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+                        "Cookie": "SOCS=CAISNQgQEitib3FfaWRlbnRpdHlmcm9udGVuZHVpc2VydmVyXzIwMjQwNjE4LjA2X3AwGgJlbiADGgYIgOCvswY"
+                    },
+                    signal: AbortSignal.timeout(4500)
+                });
+                const html = await response.text();
+                if (!response.ok) {
+                    resolverDiagnostics.pageFetchNonOkStatuses.push(response.status);
+                    return null;
+                }
+                if (!response.url) {
+                    resolverDiagnostics.pageFetchMissingUrlCount += 1;
+                    return null;
+                }
+                resolverDiagnostics.pageFetchSuccessCount += 1;
+                // Some Google News article links still redirect directly to the publisher.
+                // Capture that final URL instead of discarding it before signature parsing.
+                const finalHost = new URL(response.url).hostname.toLowerCase();
+                if (finalHost !== "news.google.com" && !finalHost.endsWith(".news.google.com")) {
+                    resolverDiagnostics.directRedirectCount += 1;
+                    return { originalUrl, directDestination: response.url };
+                }
+                const signature = (html.match(/data-n-a-sg="([^"]+)"/) || [])[1];
+                const timestamp = (html.match(/data-n-a-ts="([^"]+)"/) || [])[1];
+                const pathname = lookupUrl.pathname;
+                const marker = "/articles/";
+                const markerIndex = pathname.indexOf(marker);
+                const articleId = markerIndex >= 0 ? pathname.slice(markerIndex + marker.length) : "";
+                if (!signature || !timestamp || !articleId || !/^\d+$/.test(timestamp)) {
+                    resolverDiagnostics.signatureMissingCount += 1;
+                    return null;
+                }
+                resolverDiagnostics.signatureExtractedCount += 1;
+                return { originalUrl, articleId, signature, timestamp: Number(timestamp) };
+            } catch (error) {
+                resolverDiagnostics.pageFetchErrorCount += 1;
+                const kind = String(error && (error.cause && error.cause.code || error.name || error.message) || "unknown").slice(0, 100);
+                if (!resolverDiagnostics.pageFetchErrorKinds.includes(kind)) resolverDiagnostics.pageFetchErrorKinds.push(kind);
+                return null;
+            }
+        }));
+
+        for (const item of signatureResults.filter(item => item && item.directDestination)) {
+            try {
+                const destinationHost = new URL(item.directDestination).hostname.toLowerCase();
+                if (destinationHost !== "news.google.com" && !destinationHost.endsWith(".news.google.com")) {
+                    resolvedPublisherUrls.set(item.originalUrl, item.directDestination);
+                    resolverDiagnostics.publisherDestinationsExtracted += 1;
+                }
+            } catch (_) {}
+        }
+        const validSignatures = signatureResults.filter(item => item && item.articleId && item.signature && Number.isFinite(item.timestamp));
+        if (validSignatures.length) {
+            try {
+                resolverDiagnostics.rpcAttempted = true;
+                const rpcEntries = validSignatures.map((item, index) => {
+                    const inner = [
+                        "garturlreq",
+                        [
+                            ["X", "X", ["X", "X"], null, null, 1, 1, "GB:en", null, 1,
+                                null, null, null, null, null, 0, 1],
+                            "X", "X", 1, [1, 1, 1], 1, 1, null, 0, 0, null, 0
+                        ],
+                        item.articleId,
+                        item.timestamp,
+                        item.signature
+                    ];
+                    return ["Fbv4je", JSON.stringify(inner), null, "g" + index];
+                });
+                const rpcBody = "f.req=" + encodeURIComponent(JSON.stringify([rpcEntries]));
+                const rpcResponse = await fetch("https://news.google.com/_/DotsSplashUi/data/batchexecute", {
+                    method: "POST",
+                    headers: {
+                        "Accept": "*/*",
+                        "Accept-Language": "en-US,en;q=0.9",
+                        "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+                        "Cookie": "SOCS=CAISNQgQEitib3FfaWRlbnRpdHlmcm9udGVuZHVpc2VydmVyXzIwMjQwNjE4LjA2X3AwGgJlbiADGgYIgOCvswY"
+                    },
+                    body: rpcBody,
+                    signal: AbortSignal.timeout(6000)
+                });
+                resolverDiagnostics.rpcHttpStatus = rpcResponse.status;
+                if (rpcResponse.ok) {
+                    let rpcText = (await rpcResponse.text()).replace(/^\)\]\}'\n?/, "").trim();
+                    resolverDiagnostics.rpcResponseLength = rpcText.length;
+                    const firstLine = rpcText.split("\n").find(line => line.trim().startsWith("["));
+                    if (firstLine) rpcText = firstLine;
+                    let rpcRows = [];
+                    try { rpcRows = JSON.parse(rpcText); } catch (_) {}
+                    resolverDiagnostics.rpcRowsParsed = Array.isArray(rpcRows) ? rpcRows.length : 0;
+                    let fallbackResponseIndex = 0;
+                    for (const row of rpcRows) {
+                        if (!Array.isArray(row) || row[0] !== "wrb.fr" || row[1] !== "Fbv4je") continue;
+                        resolverDiagnostics.rpcAcceptedRows += 1;
+                        try {
+                            const payload = JSON.parse(row[2]);
+                            const destination = Array.isArray(payload) && payload[0] === "garturlres" ? payload[1] : null;
+                            // Google may return a generic response label instead of the request
+                            // tag (g0, g1...). In that case, batchexecute preserves entry order.
+                            const sequence = row[6];
+                            const taggedItem = validSignatures.find((candidate, index) => "g" + index === sequence);
+                            const item = taggedItem || validSignatures[fallbackResponseIndex];
+                            fallbackResponseIndex += 1;
+                            if (item && typeof destination === "string" && /^https?:\/\//i.test(destination)) {
+                                const destinationHost = new URL(destination).hostname.toLowerCase();
+                                if (destinationHost !== "news.google.com" && !destinationHost.endsWith(".news.google.com")) {
+                                    resolvedPublisherUrls.set(item.originalUrl, destination);
+                                    resolverDiagnostics.publisherDestinationsExtracted += 1;
+                                }
+                            }
+                        } catch (_) {}
+                    }
+                }
+            } catch (error) {
+                resolverDiagnostics.rpcErrorKind = String(error && (error.cause && error.cause.code || error.name || error.message) || "unknown").slice(0, 100);
+                // Google may rate-limit or change the RPC; preserve the original RSS URL.
+            }
+        }
+        resolverDiagnostics.resolvedPublisherUrlCount = resolvedPublisherUrls.size;
+        articles = articles.map(report => {
+            const publisherUrl = resolvedPublisherUrls.get(report.url);
+            if (!publisherUrl) return report;
+            return {
+                ...report,
+                url: publisherUrl,
+                originalPublisherUrlResolved: true,
+                originalSourceUrlVerified: false,
+                sourceLinkType: "resolved_original_publisher_link_not_content_verified",
+                sourceVerificationGuidance: "The original publisher URL was resolved automatically, but the article content and player availability are still unverified. Open the article and confirm the named player, club, publication date, and exact fixture.",
+                evidenceVerification: {
+                    ...(report.evidenceVerification || {}),
+                    status: "unverified_publication_lead",
+                    originalSourceOpened: false,
+                    originalPublisherUrlResolved: true,
+                    playerClubIndependentlyVerified: false,
+                    exactFixtureAvailabilityVerified: false,
+                    headlineOnly: true
+                }
+            };
+        });
+        // Fetch the original official club page when the resolved URL is on a supported club domain.
+        // Page text enriches evidence; it does not by itself confirm availability for this fixture.
+        const officialPageFetchDiagnostics = { attempted: 0, fetched: 0, nonOfficialSkipped: 0, errors: 0 };
+        const officialArticleHosts = ["arsenal.com", "evertonfc.com", "mancity.com", "avfc.co.uk", "rbleipzig.com", "borussia.com"];
+        const officialPageCandidates = articles.filter(article => {
+            if (!article.officialClubSource || !article.url) return false;
+            try {
+                const host = new URL(article.url).hostname.toLowerCase();
+                return officialArticleHosts.some(domain => host === domain || host.endsWith("." + domain));
+            } catch (_) { return false; }
+        }).slice(0, 8);
+        await Promise.all(officialPageCandidates.map(async article => {
+            officialPageFetchDiagnostics.attempted += 1;
+            try {
+                const response = await fetch(article.url, {
+                    method: "GET",
+                    redirect: "follow",
+                    headers: {
+                        "Accept": "text/html,application/xhtml+xml",
+                        "User-Agent": "Mozilla/5.0 (compatible; FootballGenie/1.0)"
+                    },
+                    signal: AbortSignal.timeout(5000)
+                });
+                if (!response.ok) { officialPageFetchDiagnostics.errors += 1; return; }
+                const html = (await response.text()).slice(0, 1_000_000);
+                const textContent = html
+                    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, " ")
+                    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, " ")
+                    .replace(/<noscript\b[^>]*>[\s\S]*?<\/noscript>/gi, " ")
+                    .replace(/<(?:br|\/p|\/div|\/li|\/h[1-6]|\/article|\/section)\b[^>]*>/gi, ". ")
+                    .replace(/<[^>]+>/g, " ")
+                    .replace(/&nbsp;|&#160;/gi, " ")
+                    .replace(/&amp;/gi, "&").replace(/&quot;/gi, '"')
+                    .replace(/&#39;|&apos;/gi, "'").replace(/&lt;/gi, "<").replace(/&gt;/gi, ">")
+                    .replace(/\s+/g, " ").trim();
+                if (textContent.length > 160) {
+                    article.snippet = textContent.slice(0, 5000);
+                    article.originalSourcePageFetched = true;
+                    article.originalSourcePageUrl = article.url;
+                    officialPageFetchDiagnostics.fetched += 1;
+                } else {
+                    officialPageFetchDiagnostics.errors += 1;
+                }
+            } catch (_) { officialPageFetchDiagnostics.errors += 1; }
+        }));
+        // Retain only explicit official-domain pages as fetched page evidence.
         let candidateReports = [];
         let extractionStatus = "evidence_only";
         let aiModel = null;
@@ -2205,181 +2430,6 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
         candidateReports = candidateReports.filter(isOfficialEvidenceReport);
         const nonOfficialReportsSuppressed = reportCountBeforeSourcePolicy - candidateReports.length;
 
-        // Resolve Google News wrapper URLs to their publisher destination when possible.
-        // A resolved destination is NOT proof that the article confirms player availability.
-        const googleNewsUrls = [...new Set(candidateReports
-            .map(report => report.url)
-            .filter(url => {
-                try {
-                    const host = new URL(url).hostname.toLowerCase();
-                    return (host === "news.google.com" || host.endsWith(".news.google.com"));
-                } catch (_) {
-                    return false;
-                }
-            }))].slice(0, 8);
-        const resolvedPublisherUrls = new Map();
-        const resolverDiagnostics = { googleNewsUrlCount: googleNewsUrls.length, pageFetchSuccessCount: 0, pageFetchNonOkStatuses: [], pageFetchMissingUrlCount: 0, directRedirectCount: 0, signatureExtractedCount: 0, signatureMissingCount: 0, pageFetchErrorCount: 0, pageFetchErrorKinds: [], rpcAttempted: false, rpcHttpStatus: null, rpcErrorKind: null, rpcResponseLength: 0, rpcRowsParsed: 0, rpcAcceptedRows: 0, publisherDestinationsExtracted: 0, resolvedPublisherUrlCount: 0 };
-
-        // Google News no longer reliably redirects RSS article links to publishers.
-        // Its current flow requires a per-article signature followed by one batched
-        // garturlreq RPC. Keep this bounded and optional: unresolved links remain intact.
-        const signatureResults = await Promise.all(googleNewsUrls.map(async originalUrl => {
-            try {
-                // RSS article links can return feed-style responses without the
-                // signed article-page metadata. Use the normal article page for
-                // signature extraction, retaining originalUrl as the report key.
-                const lookupUrl = new URL(originalUrl);
-                if (lookupUrl.pathname.startsWith("/rss/articles/")) {
-                    lookupUrl.pathname = lookupUrl.pathname.replace("/rss/articles/", "/articles/");
-                }
-                lookupUrl.search = "";
-                const response = await fetch(lookupUrl.href, {
-                    method: "GET",
-                    redirect: "follow",
-                    headers: {
-                        "Accept": "text/html,application/xhtml+xml",
-                        "Accept-Language": "en-US,en;q=0.9",
-                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
-                        "Cookie": "SOCS=CAISNQgQEitib3FfaWRlbnRpdHlmcm9udGVuZHVpc2VydmVyXzIwMjQwNjE4LjA2X3AwGgJlbiADGgYIgOCvswY"
-                    },
-                    signal: AbortSignal.timeout(4500)
-                });
-                const html = await response.text();
-                if (!response.ok) {
-                    resolverDiagnostics.pageFetchNonOkStatuses.push(response.status);
-                    return null;
-                }
-                if (!response.url) {
-                    resolverDiagnostics.pageFetchMissingUrlCount += 1;
-                    return null;
-                }
-                resolverDiagnostics.pageFetchSuccessCount += 1;
-                // Some Google News article links still redirect directly to the publisher.
-                // Capture that final URL instead of discarding it before signature parsing.
-                const finalHost = new URL(response.url).hostname.toLowerCase();
-                if (finalHost !== "news.google.com" && !finalHost.endsWith(".news.google.com")) {
-                    resolverDiagnostics.directRedirectCount += 1;
-                    return { originalUrl, directDestination: response.url };
-                }
-                const signature = (html.match(/data-n-a-sg="([^"]+)"/) || [])[1];
-                const timestamp = (html.match(/data-n-a-ts="([^"]+)"/) || [])[1];
-                const pathname = lookupUrl.pathname;
-                const marker = "/articles/";
-                const markerIndex = pathname.indexOf(marker);
-                const articleId = markerIndex >= 0 ? pathname.slice(markerIndex + marker.length) : "";
-                if (!signature || !timestamp || !articleId || !/^\d+$/.test(timestamp)) {
-                    resolverDiagnostics.signatureMissingCount += 1;
-                    return null;
-                }
-                resolverDiagnostics.signatureExtractedCount += 1;
-                return { originalUrl, articleId, signature, timestamp: Number(timestamp) };
-            } catch (error) {
-                resolverDiagnostics.pageFetchErrorCount += 1;
-                const kind = String(error && (error.cause && error.cause.code || error.name || error.message) || "unknown").slice(0, 100);
-                if (!resolverDiagnostics.pageFetchErrorKinds.includes(kind)) resolverDiagnostics.pageFetchErrorKinds.push(kind);
-                return null;
-            }
-        }));
-
-        for (const item of signatureResults.filter(item => item && item.directDestination)) {
-            try {
-                const destinationHost = new URL(item.directDestination).hostname.toLowerCase();
-                if (destinationHost !== "news.google.com" && !destinationHost.endsWith(".news.google.com")) {
-                    resolvedPublisherUrls.set(item.originalUrl, item.directDestination);
-                    resolverDiagnostics.publisherDestinationsExtracted += 1;
-                }
-            } catch (_) {}
-        }
-        const validSignatures = signatureResults.filter(item => item && item.articleId && item.signature && Number.isFinite(item.timestamp));
-        if (validSignatures.length) {
-            try {
-                resolverDiagnostics.rpcAttempted = true;
-                const rpcEntries = validSignatures.map((item, index) => {
-                    const inner = [
-                        "garturlreq",
-                        [
-                            ["X", "X", ["X", "X"], null, null, 1, 1, "GB:en", null, 1,
-                                null, null, null, null, null, 0, 1],
-                            "X", "X", 1, [1, 1, 1], 1, 1, null, 0, 0, null, 0
-                        ],
-                        item.articleId,
-                        item.timestamp,
-                        item.signature
-                    ];
-                    return ["Fbv4je", JSON.stringify(inner), null, "g" + index];
-                });
-                const rpcBody = "f.req=" + encodeURIComponent(JSON.stringify([rpcEntries]));
-                const rpcResponse = await fetch("https://news.google.com/_/DotsSplashUi/data/batchexecute", {
-                    method: "POST",
-                    headers: {
-                        "Accept": "*/*",
-                        "Accept-Language": "en-US,en;q=0.9",
-                        "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
-                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
-                        "Cookie": "SOCS=CAISNQgQEitib3FfaWRlbnRpdHlmcm9udGVuZHVpc2VydmVyXzIwMjQwNjE4LjA2X3AwGgJlbiADGgYIgOCvswY"
-                    },
-                    body: rpcBody,
-                    signal: AbortSignal.timeout(6000)
-                });
-                resolverDiagnostics.rpcHttpStatus = rpcResponse.status;
-                if (rpcResponse.ok) {
-                    let rpcText = (await rpcResponse.text()).replace(/^\)\]\}'\n?/, "").trim();
-                    resolverDiagnostics.rpcResponseLength = rpcText.length;
-                    const firstLine = rpcText.split("\n").find(line => line.trim().startsWith("["));
-                    if (firstLine) rpcText = firstLine;
-                    let rpcRows = [];
-                    try { rpcRows = JSON.parse(rpcText); } catch (_) {}
-                    resolverDiagnostics.rpcRowsParsed = Array.isArray(rpcRows) ? rpcRows.length : 0;
-                    let fallbackResponseIndex = 0;
-                    for (const row of rpcRows) {
-                        if (!Array.isArray(row) || row[0] !== "wrb.fr" || row[1] !== "Fbv4je") continue;
-                        resolverDiagnostics.rpcAcceptedRows += 1;
-                        try {
-                            const payload = JSON.parse(row[2]);
-                            const destination = Array.isArray(payload) && payload[0] === "garturlres" ? payload[1] : null;
-                            // Google may return a generic response label instead of the request
-                            // tag (g0, g1...). In that case, batchexecute preserves entry order.
-                            const sequence = row[6];
-                            const taggedItem = validSignatures.find((candidate, index) => "g" + index === sequence);
-                            const item = taggedItem || validSignatures[fallbackResponseIndex];
-                            fallbackResponseIndex += 1;
-                            if (item && typeof destination === "string" && /^https?:\/\//i.test(destination)) {
-                                const destinationHost = new URL(destination).hostname.toLowerCase();
-                                if (destinationHost !== "news.google.com" && !destinationHost.endsWith(".news.google.com")) {
-                                    resolvedPublisherUrls.set(item.originalUrl, destination);
-                                    resolverDiagnostics.publisherDestinationsExtracted += 1;
-                                }
-                            }
-                        } catch (_) {}
-                    }
-                }
-            } catch (error) {
-                resolverDiagnostics.rpcErrorKind = String(error && (error.cause && error.cause.code || error.name || error.message) || "unknown").slice(0, 100);
-                // Google may rate-limit or change the RPC; preserve the original RSS URL.
-            }
-        }
-        resolverDiagnostics.resolvedPublisherUrlCount = resolvedPublisherUrls.size;
-        candidateReports = candidateReports.map(report => {
-            const publisherUrl = resolvedPublisherUrls.get(report.url);
-            if (!publisherUrl) return report;
-            return {
-                ...report,
-                url: publisherUrl,
-                originalPublisherUrlResolved: true,
-                originalSourceUrlVerified: false,
-                sourceLinkType: "resolved_original_publisher_link_not_content_verified",
-                sourceVerificationGuidance: "The original publisher URL was resolved automatically, but the article content and player availability are still unverified. Open the article and confirm the named player, club, publication date, and exact fixture.",
-                evidenceVerification: {
-                    ...(report.evidenceVerification || {}),
-                    status: "unverified_publication_lead",
-                    originalSourceOpened: false,
-                    originalPublisherUrlResolved: true,
-                    playerClubIndependentlyVerified: false,
-                    exactFixtureAvailabilityVerified: false,
-                    headlineOnly: true
-                }
-            };
-        });
         const result = {
             status: candidateReports.length ? "candidate_reports_found" : (articles.length ? "no_named_absentees_established" : "no_relevant_publication_evidence"),
             fixture: { home: homeTeam, away: awayTeam },
@@ -2395,6 +2445,7 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
                 nonOfficialReportsSuppressed
             },
             resolverDiagnostics,
+            officialPageFetchDiagnostics,
             articleCount: articles.length,
             extractionStatus,
             aiModel,
