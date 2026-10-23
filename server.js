@@ -1280,10 +1280,21 @@ app.get("/api/match-intelligence/news", async (req, res) => {
             officialPublisherDomain: entry.domain
         }];
     });
+    const gdeltQuery = '(' + homeSearchNames + ' OR ' + awaySearchNames + ') (injury OR injured OR unavailable OR suspension OR suspended OR "team news" OR "ruled out" OR "out for" OR "fitness update" OR "press conference")';
+    const gdeltUrl = "https://api.gdeltproject.org/api/v2/doc/doc?" + new URLSearchParams({
+        query: gdeltQuery,
+        mode: "ArtList",
+        format: "json",
+        maxrecords: "25",
+        sort: "HybridRel"
+    }).toString();
     const providers = [
         { name: "Google News RSS - fixture", url: googleUrl, timeoutMs: 6500 },
         { name: "Google News RSS - home team", url: teamGoogleUrl(homeTeamQuery), timeoutMs: 6500, searchTeam: homeTeam },
         { name: "Google News RSS - away team", url: teamGoogleUrl(awayTeamQuery), timeoutMs: 6500, searchTeam: awayTeam },
+        // GDELT returns original publisher URLs, avoiding Google News wrapper resolution
+        // and providing an independent fallback when Google News pages are rate-limited.
+        { name: "GDELT News Search", url: gdeltUrl, timeoutMs: 7500, format: "json" },
         ...officialProviders,
         { name: "BBC Sport Football RSS", url: "https://feeds.bbci.co.uk/sport/football/rss.xml", timeoutMs: 6500 },
         { name: "Sky Sports Football RSS", url: "https://www.skysports.com/rss/11095", timeoutMs: 6500 },
