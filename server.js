@@ -1225,11 +1225,13 @@ app.get("/api/match-intelligence/news", async (req, res) => {
         timespan: "30d"
     }).toString();
 
+    // Try the independent JSON news index first. RSS sites may rate-limit cloud-hosted
+    // requests, while GDELT needs a slightly longer response window.
     const providers = [
-        { name: "Google News RSS", url: googleUrl },
-        { name: "Bing News RSS", url: bingUrl },
-        { name: "Yahoo News RSS", url: yahooUrl },
-        { name: "GDELT News Search", url: gdeltUrl, format: "json" }
+        { name: "GDELT News Search", url: gdeltUrl, format: "json", timeoutMs: 15000 },
+        { name: "Google News RSS", url: googleUrl, timeoutMs: 6500 },
+        { name: "Bing News RSS", url: bingUrl, timeoutMs: 6500 },
+        { name: "Yahoo News RSS", url: yahooUrl, timeoutMs: 6500 }
     ];
     const providerErrors = [];
     const providersAttempted = [];
@@ -1246,10 +1248,11 @@ app.get("/api/match-intelligence/news", async (req, res) => {
                     "User-Agent": "Mozilla/5.0 (compatible; FootballGenie/1.0; +https://github.com/SaShe3boyz/FootballGenie-API)",
                     "Accept": provider.format === "json" ? "application/json" : "application/rss+xml, application/xml, text/xml"
                 },
-                signal: AbortSignal.timeout(9000)
+                signal: AbortSignal.timeout(provider.timeoutMs || 7000)
             });
+            const contentType = response.headers.get("content-type") || "";
             if (!response.ok) {
-                providerErrors.push({ provider: provider.name, status: response.status });
+                providerErrors.push({ provider: provider.name, status: response.status, contentType });
                 continue;
             }
             const responseBody = await response.text();
@@ -1283,8 +1286,20 @@ app.get("/api/match-intelligence/news", async (req, res) => {
                 }).join("");
                 candidateXml = "<rss><channel>" + itemsXml + "</channel></rss>";
             }
-            if (!((/<rss[\s>]/i.test(candidateXml) && /<item[\s>]/i.test(candidateXml)) || (/<feed[\s>]/i.test(candidateXml) && /<entry[\s>]/i.test(candidateXml)))) {
-                providerErrors.push({ provider: provider.name, error: "unexpected_feed_format" });
+            // Some publishers return feeds without the expected root wrapper; accept a
+            // recognizable RSS item or Atom entry, but reject HTML error/consent pages.
+            const hasRssItems = /<item(?:\\s[^>]*)?>[\\s\\S]*?<\\/item>/i.test(candidateXml);
+            const hasAtomEntries = /<entry(?:\\s[^>]*)?>[\\s\\S]*?<\\/entry>/i.test(candidateXml);
+            const looksLikeFeed = (/<rss[\\s>]/i.test(candidateXml) && hasRssItems) ||
+                (/<feed[\\s>]/i.test(candidateXml) && hasAtomEntries) ||
+                hasRssItems || hasAtomEntries;
+            if (!looksLikeFeed) {
+                providerErrors.push({
+                    provider: provider.name,
+                    error: "unexpected_feed_format",
+                    contentType,
+                    bodyPreview: responseBody.replace(/\\s+/g, " ").slice(0, 140)
+                });
                 continue;
             }
             xml = candidateXml;
