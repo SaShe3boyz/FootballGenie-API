@@ -1390,6 +1390,93 @@ app.get("/api/match-intelligence/analyze", async (req, res) => {
     }
 });
 
+
+/*
+ * News-aware prediction review. This deliberately preserves baseline probabilities:
+ * news search leads are not verified enough to justify automatic numerical changes.
+ * The response explains evidence and potential relevance for later validation.
+ */
+app.get("/api/match-intelligence/prediction-review", async (req, res) => {
+    const homeTeam = String(req.query && req.query.homeTeam || "").trim().slice(0, 100);
+    const awayTeam = String(req.query && req.query.awayTeam || "").trim().slice(0, 100);
+    if (!homeTeam || !awayTeam || homeTeam.length < 2 || awayTeam.length < 2 ||
+        homeTeam.toLowerCase() === awayTeam.toLowerCase()) {
+        return res.status(400).json({ error: "Provide two different teams using homeTeam and awayTeam." });
+    }
+    if (!process.env.GROQ_API_KEY) {
+        return res.status(503).json({ status: "ai_not_configured", error: "Groq AI is not configured on the server." });
+    }
+    const probabilityFields = ["homeWin", "draw", "awayWin", "over25", "under25", "btts"];
+    const baseline = {};
+    for (const field of probabilityFields) {
+        const raw = req.query[field];
+        if (raw === undefined || raw === "") {
+            baseline[field] = null;
+            continue;
+        }
+        const number = Number(raw);
+        if (!Number.isFinite(number) || number < 0 || number > 100) {
+            return res.status(400).json({ error: field + " must be a number between 0 and 100." });
+        }
+        baseline[field] = number;
+    }
+    try {
+        const newsUrl = new URL("/api/match-intelligence/news", req.protocol + "://" + req.get("host"));
+        newsUrl.searchParams.set("homeTeam", homeTeam);
+        newsUrl.searchParams.set("awayTeam", awayTeam);
+        const newsResponse = await fetch(newsUrl, {
+            headers: { "Accept": "application/json" },
+            signal: AbortSignal.timeout(15000)
+        });
+        const newsData = await newsResponse.json().catch(() => ({}));
+        if (!newsResponse.ok) {
+            return res.status(502).json({ status: "news_unavailable", error: "News search failed; the baseline prediction has not been changed." });
+        }
+        const articles = (Array.isArray(newsData.articles) ? newsData.articles : []).slice(0, 12).map((article, index) => ({
+            evidenceId: index + 1,
+            title: String(article.title || "").slice(0, 300),
+            source: String(article.source || "").slice(0, 120),
+            publishedAt: article.publishedAt || null,
+            freshness: article.freshness || "date_unknown",
+            categories: Array.isArray(article.categories) ? article.categories : [],
+            certainty: article.certainty || "not_established",
+            fixtureRelevance: article.fixtureRelevance || "not_classified",
+            snippet: String(article.snippet || "").slice(0, 500),
+            url: article.url || null
+        }));
+        const systemInstruction = "You are Football Genie’s evidence-limited team-news analyst. Return a concise mobile-friendly review. Use only the supplied article titles and snippets. Identify named players only when their names literally appear in the supplied evidence; never invent or complete names. For every player mention, give evidenceId, exact article title, source, date if available, and URL. State the reported status carefully and do not present a search headline as verified medical information. Separate home-team and away-team reports; flag articles about other fixtures or general background. Explain plausible football relevance conditionally, not as a certainty. Do not change, recalculate, or suggest numerical changes to the baseline probabilities. If evidence is weak or irrelevant, say so. If no players can be named from evidence, explicitly say that. Finish with what to verify before kickoff.";
+        const userContent = "Fixture: " + homeTeam + " vs " + awayTeam +
+            "\nBaseline probabilities (percent; preserve unchanged): " + JSON.stringify(baseline) +
+            "\nSearch status: " + String(newsData.status || "unknown") +
+            "\nSearch time: " + String(newsData.searchedAt || "unknown") +
+            "\nEvidence articles:\n" + JSON.stringify(articles);
+        const result = await requestGroqAnswer(systemInstruction, userContent);
+        void logSystemEvent("prediction_news_review_created", "success", "News context reviewed alongside unchanged baseline probabilities.", {
+            homeTeam, awayTeam, articleCount: articles.length, provider: "groq", model: result.model
+        });
+        return res.json({
+            status: "review_complete",
+            fixture: { home: homeTeam, away: awayTeam },
+            provider: "groq",
+            model: result.model,
+            searchedAt: newsData.searchedAt || null,
+            baselineProbabilities: baseline,
+            adjustedProbabilities: null,
+            adjustmentStatus: "not_applied_pending_validation",
+            articleCount: articles.length,
+            evidence: articles,
+            newsReview: result.answer,
+            importantNotice: "Baseline probabilities are preserved. News articles are search leads, not independent verification. No numerical adjustment is applied until its effect can be validated against completed matches."
+        });
+    } catch (error) {
+        console.error("Prediction news review failed:", error.message);
+        void logSystemEvent("prediction_news_review_failed", "warning", "Prediction news review failed.", {
+            error: String(error.message || "unknown").slice(0, 180)
+        });
+        return res.status(502).json({ status: "review_failed", error: "Football Genie could not complete the news review. Baseline probabilities remain unchanged." });
+    }
+});
+
 app.post("/api/ai/analyze", async (req, res) => {
     const prompt = String(req.body && req.body.question || "").trim();
     const context = req.body && req.body.match && typeof req.body.match === "object"
