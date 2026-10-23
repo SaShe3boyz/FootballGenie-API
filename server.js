@@ -1235,8 +1235,10 @@ app.get("/api/match-intelligence/news", async (req, res) => {
 
     // Search either team's availability news, not only articles mentioning both clubs.
     // Most injury reports discuss one club and do not name its next opponent.
-    const query = '("' + homeTeam + '" OR "' + awayTeam +
-        '") (injury OR injured OR unavailable OR suspension OR suspended OR lineup OR "team news" OR press conference) -women -"women\'s" -WSL -ladies';
+    const homeSearchNames = footballTeamAliases(homeTeam).map(name => '"' + name + '"').join(" OR ");
+    const awaySearchNames = footballTeamAliases(awayTeam).map(name => '"' + name + '"').join(" OR ");
+    const query = '((' + homeSearchNames + ') OR (' + awaySearchNames +
+        ')) (injury OR injured OR unavailable OR suspension OR suspended OR lineup OR "team news" OR "ruled out" OR "out for" OR "fitness update" OR "press conference") -women -"women\'s" -WSL -ladies';
     const googleUrl = "https://news.google.com/rss/search?" + new URLSearchParams({
         q: query + " when:30d", hl: "en", gl: "GB", ceid: "GB:en"
     }).toString();
