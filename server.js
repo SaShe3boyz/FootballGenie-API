@@ -1408,6 +1408,13 @@ app.get("/api/match-intelligence/news", async (req, res) => {
         const hasHeadlineNoise = /\b(click here|read more|live blog|live updates)\b/i.test(lowerTitle) ||
             title.split(/\s+/).length < 4 || /(?:\|\s*){2,}|\.{4,}/.test(title);
         const classification = classifyFootballNews(title, description);
+        // A manager quote is useful only when it discusses player availability,
+        // fitness, selection, or suspension. Generic post-match comments must not
+        // be presented as absentee evidence just because a team name appears.
+        const managerAvailabilityContext = /\\b(available|unavailable|fit|fitness|miss|missing|return|returning|doubt|doubtful|assess|assessment|train|training|squad|selection|ruled out|late test|match fitness|ban|suspend|suspension)\\b/i.test(textForChecks);
+        const hasRelevantAvailabilitySignal =
+            classification.categories.some(category => ["injury", "suspension", "lineup"].includes(category)) ||
+            (classification.categories.includes("manager_comment") && managerAvailabilityContext);
         let relevanceScore = (mentionsHome ? 2 : 0) + (mentionsAway ? 2 : 0);
         if (mentionsBothTeams) relevanceScore += 4;
         if (mentionsFixtureOpponent && !mentionsBothTeams) relevanceScore -= 2;
@@ -1426,6 +1433,7 @@ app.get("/api/match-intelligence/news", async (req, res) => {
             url: /^https?:\/\//i.test(link) ? link : null,
             categories: classification.categories,
             certainty: classification.certainty,
+            hasRelevantAvailabilitySignal,
             fixtureRelevance,
             relevanceScore,
             isWomensStory,
@@ -1458,14 +1466,14 @@ app.get("/api/match-intelligence/news", async (req, res) => {
         if (item.relevanceScore < 3) { filterDiagnostics.lowRelevance++; return false; }
         if (item.fixtureRelevance === "other_fixture_excluded_from_analysis") { filterDiagnostics.conflictingOpponent++; return false; }
         if (!(item.title.toLowerCase().includes(homeTeam.toLowerCase()) || item.title.toLowerCase().includes(awayTeam.toLowerCase()))) { filterDiagnostics.noTargetTeamInTitle++; return false; }
-        if (!item.categories.some(category => ["injury", "suspension", "lineup", "manager_comment"].includes(category))) { filterDiagnostics.noRelevantNewsCategory++; return false; }
+        if (!item.hasRelevantAvailabilitySignal) { filterDiagnostics.noRelevantNewsCategory++; return false; }
         return true;
     });
     filterDiagnostics.accepted = parsedItems.length;
 
     parsedItems.sort((a, b) => b.relevanceScore - a.relevanceScore ||
         ((a.ageDays === null ? 9999 : a.ageDays) - (b.ageDays === null ? 9999 : b.ageDays)));
-    const items = parsedItems.slice(0, 15).map(({ relevanceScore, isWomensStory, hasSpamSignals, hasHeadlineNoise, ...item }) => item);
+    const items = parsedItems.slice(0, 15).map(({ relevanceScore, isWomensStory, hasSpamSignals, hasHeadlineNoise, hasRelevantAvailabilitySignal, ...item }) => item);
     const fetchedAtMs = Date.now();
     const result = {
         status: items.length ? "news_found" : "no_recent_relevant_articles",
