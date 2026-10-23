@@ -1216,7 +1216,7 @@ app.get("/api/match-intelligence/news", async (req, res) => {
             const mentionsBothTeams = mentionsHome && mentionsAway;
             // Headlines about another fixture can still contain useful injury news,
             // but should rank below reports clearly about the requested match.
-            const mentionsFixtureOpponent = /\\b(vs?\\.?|versus|against|at)\\s+[A-Z][A-Za-z.'’-]*/i.test(title);
+            const mentionsFixtureOpponent = /\b(vs?\.?|versus|against|at)\s+[A-Z][A-Za-z.'’-]*/i.test(title);
             const fixtureRelevance = mentionsBothTeams
                 ? "direct_fixture"
                 : (mentionsFixtureOpponent ? "team_news_other_fixture_or_opponent_context" : "team_background_news");
