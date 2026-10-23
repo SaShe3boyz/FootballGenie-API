@@ -1972,6 +1972,7 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
             publishedAt: article.publishedAt || null,
             snippet: String(article.snippet || "").slice(0, 5000),
             url: article.url || null,
+            publisherSourceUrl: article.publisherSourceUrl || null,
             categories: Array.isArray(article.categories) ? article.categories : [],
             availabilityAssessment: article.availabilityAssessment || "availability_not_established",
             fixtureRelevance: article.fixtureRelevance || "team_background_news"
