@@ -1232,7 +1232,13 @@ app.get("/api/match-intelligence/news", async (req, res) => {
         { name: "GDELT News Search", url: gdeltUrl, format: "json", timeoutMs: 15000 },
         { name: "Google News RSS", url: googleUrl, timeoutMs: 6500 },
         { name: "Bing News RSS", url: bingUrl, timeoutMs: 6500 },
-        { name: "Yahoo News RSS", url: yahooUrl, timeoutMs: 6500 }
+        { name: "Yahoo News RSS", url: yahooUrl, timeoutMs: 6500 },
+        // Broad, established football feeds provide resilience when query-based
+        // news search services are unavailable. The normal team/date/relevance
+        // filters below still decide whether any story can be returned.
+        { name: "BBC Sport Football RSS", url: "https://feeds.bbci.co.uk/sport/football/rss.xml", timeoutMs: 6500 },
+        { name: "Sky Sports Football RSS", url: "https://www.skysports.com/rss/11095", timeoutMs: 6500 },
+        { name: "The Athletic Football RSS", url: "https://www.nytimes.com/athletic/rss/football/", timeoutMs: 6500 }
     ];
     const providerErrors = [];
     const providersAttempted = [];
@@ -1311,10 +1317,26 @@ app.get("/api/match-intelligence/news", async (req, res) => {
         }
     }));
     providerErrors.push(...providerResults.filter(result => result.error).map(result => result.error));
-    const selectedProvider = providerResults.find(result => result.xml);
-    if (selectedProvider) {
-        xml = selectedProvider.xml;
-        providerUsed = selectedProvider.provider;
+    // Combine successful feeds rather than stopping at the first one. This lets
+    // the team/relevance filters find useful reports in independent publications
+    // when a search provider returns broad or unrelated headlines.
+    const successfulProviders = providerResults.filter(result => result.xml);
+    if (successfulProviders.length) {
+        const feedItems = successfulProviders.flatMap(result => {
+            const matches = [...result.xml.matchAll(/<item(?:\s[^>]*)?>([\s\S]*?)<\/item>/gi)];
+            return matches.map(match => {
+                const source = result.provider.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+                return "<item>" + match[1] + "<source>" + source + "</source></item>";
+            });
+        });
+        if (feedItems.length) {
+            xml = "<rss><channel>" + feedItems.join("") + "</channel></rss>";
+            providerUsed = successfulProviders.map(result => result.provider).join(" + ");
+        } else {
+            const selectedProvider = successfulProviders[0];
+            xml = selectedProvider.xml;
+            providerUsed = selectedProvider.provider;
+        }
     }
 
     // If every live provider is down or rate-limited, serve the last successful
@@ -1348,7 +1370,7 @@ app.get("/api/match-intelligence/news", async (req, res) => {
     const maxAgeMs = FOOTBALL_NEWS_MAX_AGE_DAYS * 24 * 60 * 60 * 1000;
     const feedEntries = [...xml.matchAll(/<item(?:\s[^>]*)?>([\s\S]*?)<\/item>/gi)];
     const atomEntries = feedEntries.length ? [] : [...xml.matchAll(/<entry(?:\s[^>]*)?>([\s\S]*?)<\/entry>/gi)];
-    const parsedCandidates = [...(feedEntries.length ? feedEntries : atomEntries)].slice(0, 50).map(match => {
+    const parsedCandidates = [...(feedEntries.length ? feedEntries : atomEntries)].slice(0, 150).map(match => {
         const block = match[1];
         const title = newsXmlTag(block, "title");
         const atomLink = (block.match(/<link\b[^>]*\bhref\s*=\s*["']([^"']+)["'][^>]*\/?\s*>/i) || [])[1] || "";
