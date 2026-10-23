@@ -1140,7 +1140,7 @@ function decodeNewsXml(value) {
 }
 
 function newsXmlTag(block, tag) {
-    const match = block.match(new RegExp("<" + tag + "(?:\\\\s[^>]*)?>([\\\\s\\\\S]*?)<\\\\/" + tag + ">", "i"));
+    const match = block.match(new RegExp("<" + tag + "(?:\\s[^>]*)?>([\\s\\S]*?)<\\/" + tag + ">", "i"));
     return match ? decodeNewsXml(match[1]) : "";
 }
 
