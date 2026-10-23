@@ -1149,7 +1149,7 @@ function decodeNewsXml(value) {
 function newsXmlTag(block, tag) {
     // RegExp is built from a string, so backslashes must be doubled here.
     // The previous single-slash pattern silently failed to match normal XML tags.
-    const match = block.match(new RegExp("<" + tag + "(?:\\s[^>]*)?>([\\s\\S]*?)<\\/" + tag + ">", "i"));
+    const match = block.match(new RegExp("<(?:[A-Za-z0-9_.-]+:)?" + tag + "(?:\\s[^>]*)?>([\\s\\S]*?)<\\/(?:[A-Za-z0-9_.-]+:)?" + tag + ">", "i"));
     return match ? decodeNewsXml(match[1]) : "";
 }
 function classifyFootballNews(title, snippet) {
@@ -1291,6 +1291,36 @@ app.get("/api/match-intelligence/news", async (req, res) => {
                         "<description>" + escapeXml(article.title) + "</description></item>";
                 }).join("");
                 candidateXml = "<rss><channel>" + itemsXml + "</channel></rss>";
+            }
+            // Bing News may return namespaced <News:News> records instead of RSS <item> elements.
+            // Normalize those records into ordinary RSS items before the shared filters run.
+            if (provider.name === "Bing News RSS" && !/<(?:[A-Za-z0-9_.-]+:)?item\\b/i.test(candidateXml)) {
+                const records = [...candidateXml.matchAll(/<(?:[A-Za-z0-9_.-]+:)?News(?:\\s[^>]*)?>([\\s\\S]*?)<\\/(?:[A-Za-z0-9_.-]+:)?News>/gi)];
+                const escapeFeedXml = value => String(value || "").replace(/&/g, "&amp;").replace(/</g, "&lt;")
+                    .replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&apos;");
+                const readNamespaced = (block, names) => {
+                    for (const name of names) {
+                        const value = newsXmlTag(block, name);
+                        if (value) return value;
+                    }
+                    return "";
+                };
+                const normalizedItems = records.map(record => {
+                    const block = record[1];
+                    const title = readNamespaced(block, ["Title", "title"]);
+                    const link = readNamespaced(block, ["Url", "URL", "Link", "link"]);
+                    const description = readNamespaced(block, ["Description", "Snippet", "description"]);
+                    const source = readNamespaced(block, ["Source", "Provider", "source"]);
+                    const rawDate = readNamespaced(block, ["FirstPublished", "Date", "Published", "pubDate"]);
+                    const parsedDate = rawDate ? new Date(rawDate) : null;
+                    const isoDate = parsedDate && !Number.isNaN(parsedDate.getTime()) ? parsedDate.toISOString() : "";
+                    if (!title || !link) return "";
+                    return "<item><title>" + escapeFeedXml(title) + "</title><link>" + escapeFeedXml(link) +
+                        "</link><pubDate>" + escapeFeedXml(isoDate) + "</pubDate><source>" +
+                        escapeFeedXml(source || "Bing News RSS") + "</source><description>" +
+                        escapeFeedXml(description || title) + "</description></item>";
+                }).filter(Boolean);
+                if (normalizedItems.length) candidateXml = "<rss><channel>" + normalizedItems.join("") + "</channel></rss>";
             }
             const hasRssItems = /<(?:[A-Za-z0-9_.-]+:)?item(?:\s[^>]*)?>[\s\S]*?<\/(?:[A-Za-z0-9_.-]+:)?item>/i.test(candidateXml);
             const hasAtomEntries = /<(?:[A-Za-z0-9_.-]+:)?entry(?:\s[^>]*)?>[\s\S]*?<\/(?:[A-Za-z0-9_.-]+:)?entry>/i.test(candidateXml);
