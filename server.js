@@ -1243,7 +1243,7 @@ app.get("/api/match-intelligence/news", async (req, res) => {
                 continue;
             }
             const candidateXml = await response.text();
-            if (!/<rss[\s>]/i.test(candidateXml) || !/<item[\s>]/i.test(candidateXml)) {
+            if (!((/<rss[\s>]/i.test(candidateXml) && /<item[\s>]/i.test(candidateXml)) || (/<feed[\s>]/i.test(candidateXml) && /<entry[\s>]/i.test(candidateXml)))) {
                 providerErrors.push({ provider: provider.name, error: "unexpected_feed_format" });
                 continue;
             }
@@ -1287,13 +1287,18 @@ app.get("/api/match-intelligence/news", async (req, res) => {
 
     const now = Date.now();
     const maxAgeMs = FOOTBALL_NEWS_MAX_AGE_DAYS * 24 * 60 * 60 * 1000;
-    const parsedItems = [...xml.matchAll(/<item(?:\s[^>]*)?>([\s\S]*?)<\/item>/gi)].slice(0, 50).map(match => {
+    const feedEntries = [...xml.matchAll(/<item(?:\s[^>]*)?>([\s\S]*?)<\/item>/gi)];
+    const atomEntries = feedEntries.length ? [] : [...xml.matchAll(/<entry(?:\s[^>]*)?>([\s\S]*?)<\/entry>/gi)];
+    const parsedItems = [...(feedEntries.length ? feedEntries : atomEntries)].slice(0, 50).map(match => {
         const block = match[1];
         const title = newsXmlTag(block, "title");
-        const link = newsXmlTag(block, "link");
-        const publishedAt = newsXmlTag(block, "pubDate");
-        const description = newsXmlTag(block, "description").replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").slice(0, 500);
+        const atomLink = (block.match(/<link\b[^>]*\bhref\s*=\s*["']([^"']+)["'][^>]*\/?\s*>/i) || [])[1] || "";
+        const link = newsXmlTag(block, "link") || decodeNewsXml(atomLink);
+        const publishedAt = newsXmlTag(block, "pubDate") || newsXmlTag(block, "published") || newsXmlTag(block, "updated");
+        const description = (newsXmlTag(block, "description") || newsXmlTag(block, "summary") || newsXmlTag(block, "content"))
+            .replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").slice(0, 500);
         const source = newsXmlTag(block, "source") ||
+            newsXmlTag(block, "name") ||
             ((block.match(/<(?:[A-Za-z0-9_-]+:)?Source(?:\s[^>]*)?>([\s\S]*?)<\/(?:[A-Za-z0-9_-]+:)?Source>/i) || [])[1]
                 ? decodeNewsXml((block.match(/<(?:[A-Za-z0-9_-]+:)?Source(?:\s[^>]*)?>([\s\S]*?)<\/(?:[A-Za-z0-9_-]+:)?Source>/i) || [])[1])
                 : "");
