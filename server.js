@@ -1972,29 +1972,94 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
                 }
             }))].slice(0, 8);
         const resolvedPublisherUrls = new Map();
-        await Promise.all(googleNewsUrls.map(async originalUrl => {
+
+        // Google News no longer reliably redirects RSS article links to publishers.
+        // Its current flow requires a per-article signature followed by one batched
+        // garturlreq RPC. Keep this bounded and optional: unresolved links remain intact.
+        const signatureResults = await Promise.all(googleNewsUrls.map(async originalUrl => {
             try {
                 const response = await fetch(originalUrl, {
                     method: "GET",
                     redirect: "follow",
-                    headers: { "Accept": "text/html,application/xhtml+xml" },
+                    headers: {
+                        "Accept": "text/html,application/xhtml+xml",
+                        "Accept-Language": "en-US,en;q=0.9",
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+                        "Cookie": "SOCS=CAISNQgQEitib3FfaWRlbnRpdHlmcm9udGVuZHVpc2VydmVyXzIwMjQwNjE4LjA2X3AwGgJlbiADGgYIgOCvswY"
+                    },
                     signal: AbortSignal.timeout(4500)
                 });
-                const finalUrl = response.url;
-                const ok = response.ok;
-                if (response.body && typeof response.body.cancel === "function") {
-                    await response.body.cancel().catch(() => {});
-                }
-                if (!ok || !finalUrl) return;
-                const finalHost = new URL(finalUrl).hostname.toLowerCase();
-                if (finalHost !== "news.google.com" && !finalHost.endsWith(".news.google.com") &&
-                    /^https?:$/i.test(new URL(finalUrl).protocol)) {
-                    resolvedPublisherUrls.set(originalUrl, finalUrl);
-                }
+                const html = await response.text();
+                if (!response.ok || !response.url || !response.url.includes("news.google.com")) return null;
+                const signature = (html.match(/data-n-a-sg="([^"]+)"/) || [])[1];
+                const timestamp = (html.match(/data-n-a-ts="([^"]+)"/) || [])[1];
+                const pathname = new URL(originalUrl).pathname;
+                const marker = "/articles/";
+                const markerIndex = pathname.indexOf(marker);
+                const articleId = markerIndex >= 0 ? pathname.slice(markerIndex + marker.length) : "";
+                if (!signature || !timestamp || !articleId || !/^\d+$/.test(timestamp)) return null;
+                return { originalUrl, articleId, signature, timestamp: Number(timestamp) };
             } catch (_) {
-                // Keep the aggregator link if Google News cannot be resolved in time.
+                return null;
             }
         }));
+
+        const validSignatures = signatureResults.filter(Boolean);
+        if (validSignatures.length) {
+            try {
+                const rpcEntries = validSignatures.map((item, index) => {
+                    const inner = [
+                        "garturlreq",
+                        [
+                            [["X", "X", ["X", "X"], null, null, 1, 1, "GB:en", null, 1,
+                                null, null, null, null, null, 0, 1],
+                                "X", "X", 1, [1, 1, 1], 1, 1, null, 0, 0, null, 0]
+                        ],
+                        item.articleId,
+                        item.timestamp,
+                        item.signature
+                    ];
+                    return ["Fbv4je", JSON.stringify(inner), null, "g" + index];
+                });
+                const rpcBody = "f.req=" + encodeURIComponent(JSON.stringify([rpcEntries]));
+                const rpcResponse = await fetch("https://news.google.com/_/DotsSplashUi/data/batchexecute", {
+                    method: "POST",
+                    headers: {
+                        "Accept": "*/*",
+                        "Accept-Language": "en-US,en;q=0.9",
+                        "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+                        "Cookie": "SOCS=CAISNQgQEitib3FfaWRlbnRpdHlmcm9udGVuZHVpc2VydmVyXzIwMjQwNjE4LjA2X3AwGgJlbiADGgYIgOCvswY"
+                    },
+                    body: rpcBody,
+                    signal: AbortSignal.timeout(6000)
+                });
+                if (rpcResponse.ok) {
+                    let rpcText = (await rpcResponse.text()).replace(/^\)\]\}'\n?/, "").trim();
+                    const firstLine = rpcText.split("\n").find(line => line.trim().startsWith("["));
+                    if (firstLine) rpcText = firstLine;
+                    let rpcRows = [];
+                    try { rpcRows = JSON.parse(rpcText); } catch (_) {}
+                    for (const row of rpcRows) {
+                        if (!Array.isArray(row) || row.length < 7 || row[0] !== "wrb.fr" || row[1] !== "Fbv4je") continue;
+                        try {
+                            const payload = JSON.parse(row[2]);
+                            const sequence = row[6];
+                            const destination = Array.isArray(payload) && payload[0] === "garturlres" ? payload[1] : null;
+                            const item = validSignatures.find((candidate, index) => "g" + index === sequence);
+                            if (item && typeof destination === "string" && /^https?:\/\//i.test(destination)) {
+                                const destinationHost = new URL(destination).hostname.toLowerCase();
+                                if (destinationHost !== "news.google.com" && !destinationHost.endsWith(".news.google.com")) {
+                                    resolvedPublisherUrls.set(item.originalUrl, destination);
+                                }
+                            }
+                        } catch (_) {}
+                    }
+                }
+            } catch (_) {
+                // Google may rate-limit or change the RPC; preserve the original RSS URL.
+            }
+        }
         candidateReports = candidateReports.map(report => {
             const publisherUrl = resolvedPublisherUrls.get(report.url);
             if (!publisherUrl) return report;
