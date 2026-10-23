@@ -1623,7 +1623,7 @@ app.get("/api/match-intelligence/news", async (req, res) => {
         noTargetTeamInTitle: 0,
         noRelevantNewsCategory: 0
     };
-    const parsedItems = parsedCandidates.filter(item => {
+    let parsedItems = parsedCandidates.filter(item => {
         if (!item.title || !item.url) { filterDiagnostics.missingTitleOrUrl++; return false; }
         if (item.isWomensStory) { filterDiagnostics.womenStories++; return false; }
         if (item.hasSpamSignals) { filterDiagnostics.spamSignals++; return false; }
