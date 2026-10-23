@@ -1660,6 +1660,19 @@ async function requestAbsenteeAIAnswer(systemInstruction, userContent) {
     throw new Error("No AI provider is configured for absentee extraction.");
 }
 
+// Publication age is a freshness hint, never proof of current availability.
+function assessAbsenteePublicationFreshness(publishedAt) {
+    if (!publishedAt) return { freshnessStatus: "publication_date_unknown", ageHours: null, currentAvailabilityVerified: false };
+    const timestamp = new Date(publishedAt).getTime();
+    if (!Number.isFinite(timestamp)) return { freshnessStatus: "publication_date_unknown", ageHours: null, currentAvailabilityVerified: false };
+    const ageHours = Math.max(0, Math.round((Date.now() - timestamp) / 3600000));
+    return {
+        freshnessStatus: ageHours <= 24 ? "published_within_24h" : ageHours <= 72 ? "published_within_72h" : "older_than_72h",
+        ageHours,
+        currentAvailabilityVerified: false
+    };
+}
+
 // Structured absentee-report endpoint. Publication headlines are leads, not official confirmation.
 const absenteeReportCache = new Map();
 const ABSENTEE_REPORT_CACHE_TTL_MS = 10 * 60 * 1000;
@@ -1747,11 +1760,13 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
                     const team = teamFromSubject || (evidence.searchTeam &&
                         [homeTeam, awayTeam].find(name => normalizeTeamName(name) === normalizeTeamName(evidence.searchTeam)));
                     if (!team) return [];
+                    const freshness = assessAbsenteePublicationFreshness(evidence.publishedAt);
                     return [{
                         player, team, reportedStatus,
                         reason: title.slice(0, 220),
                         evidenceId: evidence.evidenceId, title, source: evidence.source,
                         publishedAt: evidence.publishedAt, url: evidence.url,
+                        ...freshness,
                         fixtureRelevance: evidence.fixtureRelevance,
                         evidenceAssessment: reportedStatus === "reported_unavailable"
                             ? "reported_unavailable_check_original_source"
