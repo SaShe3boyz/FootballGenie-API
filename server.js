@@ -1216,25 +1216,35 @@ app.get("/api/match-intelligence/news", async (req, res) => {
         p: query
     }).toString();
 
+    const gdeltUrl = "https://api.gdeltproject.org/api/v2/doc/doc?" + new URLSearchParams({
+        query: '("' + homeTeam + '" OR "' + awayTeam + '") (injury OR injured OR unavailable OR suspension OR suspended OR lineup OR "team news")',
+        mode: "ArtList",
+        format: "json",
+        maxrecords: "50",
+        sort: "DateDesc",
+        timespan: "30d"
+    }).toString();
+
     const providers = [
         { name: "Google News RSS", url: googleUrl },
         { name: "Bing News RSS", url: bingUrl },
-        { name: "Yahoo News RSS", url: yahooUrl }
+        { name: "Yahoo News RSS", url: yahooUrl },
+        { name: "GDELT News Search", url: gdeltUrl, format: "json" }
     ];
     const providerErrors = [];
     const providersAttempted = [];
     let xml = "";
     let providerUsed = "";
 
-    // Use the first healthy provider. A 429 or outage from one search provider
-    // must not stop Football Genie from trying the independent fallback.
+    // Use the first healthy provider. RSS failures must not prevent trying the
+    // independent GDELT news index, which returns JSON rather than an RSS feed.
     for (const provider of providers) {
         providersAttempted.push(provider.name);
         try {
             const response = await fetch(provider.url, {
                 headers: {
                     "User-Agent": "Mozilla/5.0 (compatible; FootballGenie/1.0; +https://github.com/SaShe3boyz/FootballGenie-API)",
-                    "Accept": "application/rss+xml, application/xml, text/xml"
+                    "Accept": provider.format === "json" ? "application/json" : "application/rss+xml, application/xml, text/xml"
                 },
                 signal: AbortSignal.timeout(9000)
             });
@@ -1242,7 +1252,37 @@ app.get("/api/match-intelligence/news", async (req, res) => {
                 providerErrors.push({ provider: provider.name, status: response.status });
                 continue;
             }
-            const candidateXml = await response.text();
+            const responseBody = await response.text();
+            let candidateXml = responseBody;
+            if (provider.format === "json") {
+                let gdeltData;
+                try { gdeltData = JSON.parse(responseBody); }
+                catch (_) {
+                    providerErrors.push({ provider: provider.name, error: "unexpected_json_format" });
+                    continue;
+                }
+                const articles = Array.isArray(gdeltData.articles) ? gdeltData.articles : [];
+                if (!articles.length) {
+                    providerErrors.push({ provider: provider.name, error: "no_articles_returned" });
+                    continue;
+                }
+                const escapeXml = value => String(value || "").replace(/&/g, "&amp;").replace(/</g, "&lt;")
+                    .replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&apos;");
+                const itemsXml = articles.map(article => {
+                    const rawDate = String(article.seendate || "");
+                    const parsedDate = rawDate
+                        ? new Date(rawDate.replace(/^(\d{4})(\d{2})(\d{2})T/, "$1-$2-$3T"))
+                        : null;
+                    const isoDate = parsedDate && !Number.isNaN(parsedDate.getTime())
+                        ? parsedDate.toISOString() : "";
+                    return "<item><title>" + escapeXml(article.title) + "</title>" +
+                        "<link>" + escapeXml(article.url) + "</link>" +
+                        "<pubDate>" + escapeXml(isoDate) + "</pubDate>" +
+                        "<source>" + escapeXml(article.domain || "GDELT News Search") + "</source>" +
+                        "<description>" + escapeXml(article.title) + "</description></item>";
+                }).join("");
+                candidateXml = "<rss><channel>" + itemsXml + "</channel></rss>";
+            }
             if (!((/<rss[\s>]/i.test(candidateXml) && /<item[\s>]/i.test(candidateXml)) || (/<feed[\s>]/i.test(candidateXml) && /<entry[\s>]/i.test(candidateXml)))) {
                 providerErrors.push({ provider: provider.name, error: "unexpected_feed_format" });
                 continue;
