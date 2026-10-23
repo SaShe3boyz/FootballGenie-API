@@ -1896,6 +1896,8 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
             searchProvider: String(article.searchProvider || "").slice(0, 100) || null,
             originalPublisherUrlResolved: article.originalPublisherUrlResolved === true,
             publisherUrlResolutionMethod: article.publisherUrlResolutionMethod || null,
+            officialClubSource: article.officialClubSource === true,
+            sourceTrustTier: article.sourceTrustTier || (article.officialClubSource === true ? "official_club_website" : "secondary_publication"),
             publishedAt: article.publishedAt || null,
             snippet: String(article.snippet || "").slice(0, 500),
             url: article.url || null,
@@ -1962,13 +1964,14 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
                                 return "source_link_missing_or_invalid";
                             }
                         })(),
-                        officialPublisherDomainMatch: (() => {
+                        officialPublisherDomainMatch: evidence.officialClubSource === true || (() => {
                             try {
                                 const host = new URL(evidence.url).hostname.toLowerCase();
                                 return host === "mancity.com" || host.endsWith(".mancity.com") ||
                                     host === "avfc.co.uk" || host.endsWith(".avfc.co.uk");
                             } catch (_) { return false; }
                         })(),
+                        sourceTrustTier: evidence.sourceTrustTier || (evidence.officialClubSource === true ? "official_club_website" : "secondary_publication"),
                         publisherUrlResolutionMethod: evidence.publisherUrlResolutionMethod ||
                             (String(evidence.searchProvider || "").startsWith("Bing News RSS - official")
                                 ? "direct_official_club_domain_search_result" : null),
