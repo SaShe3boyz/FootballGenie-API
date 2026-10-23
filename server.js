@@ -1662,12 +1662,29 @@ async function requestAbsenteeAIAnswer(systemInstruction, userContent) {
 
 // Publication age is a freshness hint, never proof of current availability.
 function assessAbsenteePublicationFreshness(publishedAt) {
-    if (!publishedAt) return { freshnessStatus: "publication_date_unknown", ageHours: null, currentAvailabilityVerified: false };
+    if (!publishedAt) return {
+        freshnessStatus: "publication_date_unknown",
+        freshnessInterpretation: "date_unknown_do_not_assume_current",
+        ageHours: null,
+        currentAvailabilityVerified: false
+    };
     const timestamp = new Date(publishedAt).getTime();
-    if (!Number.isFinite(timestamp)) return { freshnessStatus: "publication_date_unknown", ageHours: null, currentAvailabilityVerified: false };
+    if (!Number.isFinite(timestamp)) return {
+        freshnessStatus: "publication_date_unknown",
+        freshnessInterpretation: "date_unknown_do_not_assume_current",
+        ageHours: null,
+        currentAvailabilityVerified: false
+    };
     const ageHours = Math.max(0, Math.round((Date.now() - timestamp) / 3600000));
+    const freshnessStatus = ageHours <= 24 ? "published_within_24h"
+        : ageHours <= 72 ? "published_within_72h" : "older_than_72h";
     return {
-        freshnessStatus: ageHours <= 24 ? "published_within_24h" : ageHours <= 72 ? "published_within_72h" : "older_than_72h",
+        freshnessStatus,
+        freshnessInterpretation: ageHours <= 24
+            ? "recent_publication_still_unverified"
+            : ageHours <= 72
+                ? "check_original_source_before_treating_as_current"
+                : "historical_report_check_current_source",
         ageHours,
         currentAvailabilityVerified: false
     };
