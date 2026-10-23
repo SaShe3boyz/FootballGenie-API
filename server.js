@@ -1784,7 +1784,7 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
         // the fixture/team, e.g. "Man City Injury News: Semenyo Out, O'Reilly Doubt".
         // Status is derived per named phrase so one doubtful player does not downgrade
         // a separate player explicitly reported out in the same headline.
-        const namedAvailabilityPattern = /((?:[A-Z][A-Za-z'’.-]{2,}(?:\s+[A-Z][A-Za-z'’.-]{1,}){0,2})(?:\s+(?:and|&)\s+[A-Z][A-Za-z'’.-]{2,}(?:\s+[A-Z][A-Za-z'’.-]{1,}){0,1})?)\s+(?:(?:is|has been|will be)\s+)?(ruled out|out\b|injured\b|sidelined\b|set to miss|will miss|to miss|a doubt\b|doubts?\b|doubtful\b|faces? .*? injury|suffers? .*? injury|suffers? .*? knock)/gi;
+        const namedAvailabilityPattern = /((?:[A-Z][A-Za-z'’.-]{2,}(?:\s+[A-Z][A-Za-z'’.-]{1,}){0,2})(?:\s+(?:and|&)\s+[A-Z][A-Za-z'’.-]{2,}(?:\s+[A-Z][A-Za-z'’.-]{1,}){0,1})?)\s+(?:(?:is|has been|will be)\s+)?(ruled out|out\b|injured\b|sidelined\b|set to miss|will miss|to miss|a doubt\b|doubts?\b|doubtful\b|faces? .*? injury|suffers? .*? injury|suffers? .*? knock|fit\b|available\b|back in training|returns? to training|returns? to the squad|available for selection)/gi;
         candidateReports = articles.flatMap(evidence => {
             const title = String(evidence.title || "");
             const subjectMarker = /\b(?:vs?\.?|versus|against|ahead of|before|after|following|trip to|clash with|meeting with|showdown with|tie with|game against|match against|game with|match with)\b/i;
@@ -1798,7 +1798,9 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
                 const phrase = String(match[2] || "").toLowerCase();
                 const reportedStatus = /\b(?:a doubt|doubts?|doubtful)\b/.test(phrase)
                     ? "doubtful_or_test_pending"
-                    : "reported_unavailable";
+                    : /\b(?:fit|available|back in training|returns? to training|returns? to the squad|available for selection)\b/.test(phrase)
+                        ? "reported_available_check_source"
+                        : "reported_unavailable";
                 const players = namesText.split(/\s+(?:and|&)\s+/i).map(name => name.trim()).filter(Boolean);
                 // Avoid treating team labels or generic editorial phrases as players.
                 return players.flatMap(player => {
@@ -1826,12 +1828,16 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
                             }
                         })(),
                         originalSourceUrlVerified: false,
-                        sourceVerificationGuidance: "Open the original publisher page and confirm the named player, club, publication date, and exact fixture before treating this as current availability.",
+                        sourceVerificationGuidance: reportedStatus === "reported_available_check_source"
+                            ? "This headline suggests availability, not an absence. Open the original publisher or official club statement and confirm the named player, date, and exact fixture before marking available."
+                            : "Open the original publisher page and confirm the named player, club, publication date, and exact fixture before treating this as current availability.",
                         ...freshness,
                         fixtureRelevance: evidence.fixtureRelevance,
                         evidenceAssessment: reportedStatus === "reported_unavailable"
                             ? "reported_unavailable_check_original_source"
-                            : "reported_doubtful_or_test_pending",
+                            : reportedStatus === "reported_available_check_source"
+                                ? "reported_available_check_original_source"
+                                : "reported_doubtful_or_test_pending",
                         extractionMethod: "literal_headline_phrase"
                     }];
                 });
