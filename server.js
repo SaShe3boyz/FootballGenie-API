@@ -1782,7 +1782,20 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
                         player, team, reportedStatus,
                         reason: title.slice(0, 220),
                         evidenceId: evidence.evidenceId, title, source: evidence.source,
+                        evidenceQuote: String(match[0] || "").trim(),
                         publishedAt: evidence.publishedAt, url: evidence.url,
+                        sourceLinkType: (() => {
+                            try {
+                                const host = new URL(evidence.url).hostname.toLowerCase();
+                                return host === "news.google.com" || host.endsWith(".news.google.com")
+                                    ? "news_aggregator_link_original_publisher_not_resolved"
+                                    : "publisher_link_candidate_not_independently_verified";
+                            } catch (_) {
+                                return "source_link_missing_or_invalid";
+                            }
+                        })(),
+                        originalSourceUrlVerified: false,
+                        sourceVerificationGuidance: "Open the original publisher page and confirm the named player, club, publication date, and exact fixture before treating this as current availability.",
                         ...freshness,
                         fixtureRelevance: evidence.fixtureRelevance,
                         evidenceAssessment: reportedStatus === "reported_unavailable"
