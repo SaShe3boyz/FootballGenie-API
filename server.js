@@ -1288,10 +1288,14 @@ app.get("/api/match-intelligence/news", async (req, res) => {
         maxrecords: "10",
         sort: "DateDesc"
     }).toString();
+    const bingQuery = '"' + homeSearchNames + '" "' + awaySearchNames + '" (injury OR injured OR "team news" OR unavailable OR "ruled out" OR "out for")';
+    const bingUrl = "https://www.bing.com/news/search?q=" + encodeURIComponent(bingQuery) + "&format=rss";
     const providers = [
         { name: "Google News RSS - fixture", url: googleUrl, timeoutMs: 6500 },
         { name: "Google News RSS - home team", url: teamGoogleUrl(homeTeamQuery), timeoutMs: 6500, searchTeam: homeTeam },
         { name: "Google News RSS - away team", url: teamGoogleUrl(awayTeamQuery), timeoutMs: 6500, searchTeam: awayTeam },
+        // Bing News RSS provides original publisher URLs via an encoded apiclick link.
+        { name: "Bing News RSS", url: bingUrl, timeoutMs: 6500 },
         // GDELT returns original publisher URLs, avoiding Google News wrapper resolution
         // and providing an independent fallback when Google News pages are rate-limited.
         { name: "GDELT News Search", url: gdeltUrl, timeoutMs: 4500, format: "json" },
@@ -1323,6 +1327,23 @@ app.get("/api/match-intelligence/news", async (req, res) => {
             }
             const responseBody = await response.text();
             let candidateXml = responseBody;
+            if (provider.name === "Bing News RSS") {
+                // Unwrap Bing's tracking URL to the actual publisher article before parsing.
+                candidateXml = candidateXml.replace(/<link>([\s\S]*?)<\/link>/gi, (whole, rawLink) => {
+                    const decodedLink = decodeNewsXml(rawLink.trim());
+                    try {
+                        const parsedLink = new URL(decodedLink);
+                        if (parsedLink.hostname.toLowerCase() === "www.bing.com" &&
+                            parsedLink.pathname.toLowerCase().includes("apiclick.aspx")) {
+                            const destination = parsedLink.searchParams.get("url");
+                            if (destination && /^https?:\/\//i.test(destination)) {
+                                return "<link>" + destination.replace(/&/g, "&amp;") + "</link>";
+                            }
+                        }
+                    } catch (_) {}
+                    return whole;
+                });
+            }
             if (provider.format === "json") {
                 let gdeltData;
                 try { gdeltData = JSON.parse(responseBody); }
