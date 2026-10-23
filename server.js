@@ -1210,32 +1210,11 @@ app.get("/api/match-intelligence/news", async (req, res) => {
     const googleUrl = "https://news.google.com/rss/search?" + new URLSearchParams({
         q: query + " when:30d", hl: "en", gl: "GB", ceid: "GB:en"
     }).toString();
-    const bingUrl = "https://www.bing.com/news/search?" + new URLSearchParams({
-        q: query, format: "rss"
-    }).toString();
-    const yahooUrl = "https://news.search.yahoo.com/rss?" + new URLSearchParams({
-        p: query
-    }).toString();
-
-    const gdeltUrl = "https://api.gdeltproject.org/api/v2/doc/doc?" + new URLSearchParams({
-        query: '("' + homeTeam + '" OR "' + awayTeam + '") (injury OR injured OR unavailable OR suspension OR suspended OR lineup OR "team news")',
-        mode: "ArtList",
-        format: "json",
-        maxrecords: "50",
-        sort: "DateDesc",
-        timespan: "30d"
-    }).toString();
-
-    // Try the independent JSON news index first. RSS sites may rate-limit cloud-hosted
-    // requests, while GDELT needs a slightly longer response window.
+    // Use only the selected news sources: Google News search plus established
+    // football coverage from BBC Sport, Sky Sports and The Athletic. Providers
+    // that repeatedly fail or return unsuitable results are intentionally excluded.
     const providers = [
-        { name: "GDELT News Search", url: gdeltUrl, format: "json", timeoutMs: 15000 },
         { name: "Google News RSS", url: googleUrl, timeoutMs: 6500 },
-        { name: "Bing News RSS", url: bingUrl, timeoutMs: 6500 },
-        { name: "Yahoo News RSS", url: yahooUrl, timeoutMs: 6500 },
-        // Broad, established football feeds provide resilience when query-based
-        // news search services are unavailable. The normal team/date/relevance
-        // filters below still decide whether any story can be returned.
         { name: "BBC Sport Football RSS", url: "https://feeds.bbci.co.uk/sport/football/rss.xml", timeoutMs: 6500 },
         { name: "Sky Sports Football RSS", url: "https://www.skysports.com/rss/11095", timeoutMs: 6500 },
         { name: "The Athletic Football RSS", url: "https://www.nytimes.com/athletic/rss/football/", timeoutMs: 6500 }
