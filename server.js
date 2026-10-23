@@ -2278,7 +2278,7 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
         // Everton's official news URLs use a date + headline slug. If search engines
         // hide the destination URL, safely reconstruct candidate slugs and verify the page
         // title/content on Everton's own domain before accepting the URL.
-        const officialSlugResolutionDiagnostics = { attempted: 0, resolved: 0, errors: 0 };
+        const officialSlugResolutionDiagnostics = { attempted: 0, resolved: 0, errors: 0, nonOkStatuses: [], contentMismatchCount: 0 };
         const evertonSlugCandidates = articles.filter(article => {
             if (!article.officialClubSource || !article.url || !/news\.google\.com/i.test(article.url) || !article.publishedAt) return false;
             try { return /(^|\.)evertonfc\.com$/i.test(new URL(article.publisherSourceUrl || "").hostname); }
@@ -2304,7 +2304,10 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
                         redirect: "follow",
                         signal: AbortSignal.timeout(4500)
                     });
-                    if (!response.ok) continue;
+                    if (!response.ok) {
+                        officialSlugResolutionDiagnostics.nonOkStatuses.push(response.status);
+                        continue;
+                    }
                     const finalUrl = new URL(response.url);
                     if (!/(^|\.)evertonfc\.com$/i.test(finalUrl.hostname)) continue;
                     const html = (await response.text()).slice(0, 1_000_000);
@@ -2321,6 +2324,8 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
                         article.publisherUrlResolutionMethod = "verified_official_everton_date_slug";
                         officialSlugResolutionDiagnostics.resolved += 1;
                         break;
+                    } else {
+                        officialSlugResolutionDiagnostics.contentMismatchCount += 1;
                     }
                 }
             } catch (_) { officialSlugResolutionDiagnostics.errors += 1; }
