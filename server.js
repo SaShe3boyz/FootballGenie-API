@@ -1996,9 +1996,9 @@ app.get("/api/match-intelligence/news", async (req, res) => {
             googleNewsLinksMatchedToBingPublisher: bingPublisherLinksMatched
         },
         count: items.length,
-        articles: items.map(article => ({ ...article, fullInformation: [article.title, article.snippet].filter(Boolean).join("\n\n"), brandSignature: "FOOTBALLGENIE", informationOnly: true })),
+        articles: items.map(article => ({ ...article, fullInformation: [article.title, article.snippet].filter(Boolean).join("\n\n"), brandSignature: "FOOTBALLGENIE", sourceLabel: "FOOTBALL GENIE", informationOnly: true })),
         brandSignature: "FOOTBALLGENIE",
-        importantNotice: "FOOTBALLGENIE INFORMATION FEATURE: articles and summaries are provided for user information only. News does not change match probabilities; Result Validation is the accuracy-tuning process. Items may be media reports and are not independently verified official player-availability records. Articles older than 7 days, with missing dates, or future dates are excluded. No results does not mean there are no injuries."
+        importantNotice: ""
     };
     footballNewsCache.set(cacheKey, {
         expiresAt: fetchedAtMs + FOOTBALL_NEWS_CACHE_TTL_MS,
@@ -2038,13 +2038,12 @@ app.get("/api/match-intelligence/news", async (req, res) => {
                 ...article,
                 url: null,
                 brandSignature: "FOOTBALLGENIE",
-                sourceLabel: article.officialClubSource
-                    ? publisherLabel + " • Official club source"
-                    : publisherLabel,
+                sourceLabel: "FOOTBALL GENIE",
+                publisherLabel,
                 sourceLinkHidden: true
             };
         }),
-        importantNotice: "FOOTBALLGENIE signs off this information feature. News is informational only and does not affect match probabilities; Result Validation is used to tune prediction accuracy. Article text may be a report rather than an independently verified official statement."
+        importantNotice: ""
     });
 });
 
