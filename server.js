@@ -3329,8 +3329,8 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
             status: "absentee_intelligence_unavailable",
             error: "Football Genie could not prepare the absentee report. No player availability has been guessed."
         });
-    */
     }
+    */
 });
 
 // Groq is the primary AI provider for Football Genie.
