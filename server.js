@@ -2466,10 +2466,12 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
         // the fixture/team, e.g. "Man City Injury News: Semenyo Out, O'Reilly Doubt".
         // Status is derived per named phrase so one doubtful player does not downgrade
         // a separate player explicitly reported out in the same headline.
-        const namedAvailabilityPattern = /((?:[A-Z][A-Za-z'’.-]{2,}(?:\s+[A-Z][A-Za-z'’.-]{1,}){0,2})(?:\s+(?:and|&)\s+[A-Z][A-Za-z'’.-]{2,}(?:\s+[A-Z][A-Za-z'’.-]{1,}){0,1})?)\s+(?:(?:is|has been|will be|was|were|have(?: also)? been|has also been)\s+)?(ruled out|out\b|injured\b|sidelined\b|set to miss|will miss|to miss|a doubt\b|doubts?\b|doubtful\b|could return|may return|could be available|faces? .*? injury|suffers? .*? injury|suffers? .*? knock|fit\b|available\b|back in training|returns? to training|returns? to the squad|available for selection)/gi;
+        const namedAvailabilityPattern = /((?:[A-Z][A-Za-z'’.-]{2,}(?:[ \t]+[A-Z][A-Za-z'’.-]{1,}){0,2})(?:[ \t]+(?:and|&)\s+[A-Z][A-Za-z'’.-]{2,}(?:[ \t]+[A-Z][A-Za-z'’.-]{1,}){0,1})?)[ \t]+(?:(?:is|has been|will be|was|were|have(?: also)? been|has also been)[ \t]+)?(ruled out|out\b|injured\b|sidelined\b|set to miss|will miss|to miss|a doubt\b|doubts?\b|doubtful\b|could return|may return|could be available|faces? .*? injury|suffers? .*? injury|suffers? .*? knock|fit\b|available\b|back in training|returns? to training|returns? to the squad|available for selection)/gi;
         candidateReports = articles.flatMap(evidence => {
             const title = String(evidence.title || "");
-            const availabilityText = title + " " + String(evidence.snippet || "");
+            // Keep fallback extraction inside sentence boundaries to avoid joining unrelated capitalized words into player names.
+            const availabilityText = (title + ". " + String(evidence.snippet || ""))
+                .replace(/([.!?])\s+(?=[A-Z])/g, "$1\n");
             const subjectMarker = /\b(?:vs?\.?|versus|against|ahead of|before|after|following|trip to|clash with|meeting with|showdown with|tie with|game against|match against|game with|match with)\b/i;
             const subjectEnd = title.search(subjectMarker);
             const articleSubject = (subjectEnd >= 0 ? title.slice(0, subjectEnd) : title).trim();
@@ -2509,7 +2511,7 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
                 return players.flatMap(player => {
                     // Headlines also use capitalized medical terms immediately before "doubt"
                     // (e.g. "Back Doubt", "Calf Doubt", "injury doubts"). These are not player names.
-                    if (!player || /^(?:man city|manchester city|aston villa|team news|injury news|injury|injuries|back|calf|hamstring|knee|ankle|muscle|fitness|latest|confirmed|predicted|lineup|line-up|return|doubt|doubts|update|updates|status|test|training|available|unavailable)$/i.test(player)) return [];
+                    if (!player || /^(?:man city|manchester city|aston villa|team news|injury news|injury|injuries|back|calf|hamstring|knee|ankle|muscle|fitness|latest|confirmed|predicted|lineup|line-up|return|doubt|doubts|update|updates|status|test|training|available|unavailable)$/i.test(player) || /^(?:but|and|while|after|before|following|ahead|league|time|the|who|which|that)\b/i.test(player) || /[ \t]+(?:after|before|while|but|and|who|which|that|the)$/i.test(player)) return [];
                     const contextStart = Math.max(0, Number(match.index || 0) - 260);
                     const localContext = availabilityText.slice(contextStart, Number(match.index || 0) + String(match[0] || "").length).toLowerCase();
                     const contextualTeam = [homeTeam, awayTeam].map(name => ({
