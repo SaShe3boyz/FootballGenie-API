@@ -2714,10 +2714,26 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
                         evidenceAssessment: evidence.availabilityAssessment
                     }];
                 });
-                // Prefer validated AI candidates when present; otherwise retain
-                // the deterministic literal-headline candidates created above.
-                if (aiCandidateReports.length) candidateReports = aiCandidateReports;
-                extractionStatus = aiCandidateReports.length ? "ai_extracted_candidates" : "literal_fallback_no_ai_candidates";
+                // Keep deterministic candidates from the fetched official page even when
+                // AI returns only a subset. AI extraction is an optional supplement, never
+                // allowed to erase literal, rule-matched player/status evidence.
+                if (aiCandidateReports.length) {
+                    const existingCandidateKeys = new Set(candidateReports.map(report =>
+                        normalizeTeamName(report.player) + "|" + normalizeTeamName(report.team)
+                    ));
+                    const additionalAiCandidates = aiCandidateReports.filter(report => {
+                        const key = normalizeTeamName(report.player) + "|" + normalizeTeamName(report.team);
+                        if (existingCandidateKeys.has(key)) return false;
+                        existingCandidateKeys.add(key);
+                        return true;
+                    });
+                    candidateReports = [...candidateReports, ...additionalAiCandidates];
+                    extractionStatus = additionalAiCandidates.length
+                        ? "ai_plus_literal_candidates"
+                        : "literal_candidates_ai_confirmed_or_subset";
+                } else {
+                    extractionStatus = "literal_fallback_no_ai_candidates";
+                }
             } catch (error) {
                 // Do not fail the whole absentee endpoint if AI is rate-limited; return publication evidence only.
                 console.warn("Absentee extraction fell back to evidence-only mode:", String(error.message || error).slice(0, 180));
