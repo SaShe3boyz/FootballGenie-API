@@ -2120,6 +2120,118 @@ function assessAbsenteePublicationFreshness(publishedAt) {
     };
 }
 
+// BIG BALLS Data is the primary structured source for football absences.
+const BIGBALLS_FOOTBALL_LEAGUES = {
+    epl: "epl", "premier league": "epl", premierleague: "epl", england: "epl",
+    laliga: "laliga", "la liga": "laliga", spain: "laliga",
+    seriea: "seriea", "serie a": "seriea", italy: "seriea",
+    bundesliga: "bundesliga", germany: "bundesliga",
+    ligue1: "ligue1", "ligue 1": "ligue1", france: "ligue1",
+    ucl: "ucl", "champions league": "ucl", "uefa champions league": "ucl",
+    mls: "mls", "major league soccer": "mls"
+};
+const BIGBALLS_TEAM_LEAGUES = [
+    { league: "epl", teams: ["arsenal","aston villa","bournemouth","brentford","brighton","burnley","chelsea","crystal palace","everton","fulham","leeds united","liverpool","manchester city","man city","manchester united","man united","newcastle united","nottingham forest","sunderland","tottenham","west ham","wolverhampton wanderers","wolves"] },
+    { league: "laliga", teams: ["real madrid","barcelona","atletico madrid","atlético madrid","athletic club","real sociedad","villarreal","valencia","sevilla","real betis","girona","getafe","osasuna","mallorca","celta vigo","espanyol","elche","levante","alaves","deportivo alaves","rayo vallecano"] },
+    { league: "seriea", teams: ["inter","inter milan","ac milan","milan","juventus","napoli","roma","lazio","atalanta","fiorentina","bologna","torino","udinese","genoa","parma","cagliari","lecce","sassuolo","como","pisa","cremonese"] },
+    { league: "bundesliga", teams: ["bayern munich","borussia dortmund","rb leipzig","bayer leverkusen","eintracht frankfurt","stuttgart","freiburg","werder bremen","mainz","hoffenheim","wolfsburg","augsburg","union berlin","borussia monchengladbach","hamburger sv","koln","heidenheim","st pauli"] },
+    { league: "ligue1", teams: ["paris saint-germain","paris saint germain","psg","marseille","monaco","lyon","lille","nice","lens","rennes","strasbourg","toulouse","nantes","montpellier","reims","auxerre","angers","le havre","lorient","metz","brest"] },
+    { league: "mls", teams: ["inter miami","la galaxy","los angeles fc","lafc","new york city","new york red bulls","atlanta united","seattle sounders","portland timbers","columbus crew","fc cincinnati","orlando city","austin fc","dallas","houston dynamo","san diego fc"] }
+];
+function inferBigBallsLeague(homeTeam, awayTeam, competition) {
+    const supplied = String(competition || "").toLowerCase().trim();
+    if (BIGBALLS_FOOTBALL_LEAGUES[supplied]) return BIGBALLS_FOOTBALL_LEAGUES[supplied];
+    const compact = supplied.replace(/[^a-z0-9]/g, "");
+    if (BIGBALLS_FOOTBALL_LEAGUES[compact]) return BIGBALLS_FOOTBALL_LEAGUES[compact];
+    for (const group of BIGBALLS_TEAM_LEAGUES) {
+        if ([homeTeam, awayTeam].some(team => group.teams.some(name =>
+            normalizeTeamName(team).includes(normalizeTeamName(name)) ||
+            normalizeTeamName(name).includes(normalizeTeamName(team))))) return group.league;
+    }
+    return null;
+}
+function extractBigBallsRows(payload) {
+    if (Array.isArray(payload)) return payload;
+    if (!payload || typeof payload !== "object") return [];
+    for (const key of ["data", "injuries", "absences", "results", "items", "records"]) {
+        const value = payload[key];
+        if (Array.isArray(value)) return value;
+        if (value && typeof value === "object") {
+            for (const nestedKey of ["data", "injuries", "absences", "results", "items", "records"]) {
+                if (Array.isArray(value[nestedKey])) return value[nestedKey];
+            }
+        }
+    }
+    return [];
+}
+function bigBallsText(...values) {
+    for (const value of values) {
+        if (typeof value === "string" && value.trim()) return value.trim();
+        if (value && typeof value === "object" && typeof value.name === "string" && value.name.trim()) return value.name.trim();
+    }
+    return "";
+}
+async function fetchBigBallsFootballAbsences(homeTeam, awayTeam, competition) {
+    const apiKey = process.env.BIGBALLSDATA_API_KEY || process.env.BIG_BALLS_DATA_API_KEY;
+    if (!apiKey) {
+        const error = new Error("BIGBALLSDATA_API_KEY is not configured.");
+        error.code = "bigballs_key_missing";
+        throw error;
+    }
+    const league = inferBigBallsLeague(homeTeam, awayTeam, competition);
+    if (!league) {
+        const error = new Error("The fixture league could not be determined. Supply the competition parameter.");
+        error.code = "bigballs_league_unknown";
+        throw error;
+    }
+    const url = new URL("https://api.bigballsdata.com/v1/injuries");
+    url.searchParams.set("league", league);
+    const response = await fetch(url.href, {
+        headers: { "Authorization": "Bearer " + apiKey, "Accept": "application/json" },
+        signal: AbortSignal.timeout(12000)
+    });
+    const textBody = await response.text();
+    let payload;
+    try { payload = JSON.parse(textBody); }
+    catch (_) {
+        const error = new Error("BIG BALLS Data returned an unreadable response.");
+        error.code = "bigballs_invalid_json";
+        error.status = response.status;
+        throw error;
+    }
+    if (!response.ok) {
+        const providerMessage = payload && payload.error && (payload.error.message || payload.error) ||
+            payload && payload.message || "Provider request failed.";
+        const error = new Error("BIG BALLS Data HTTP " + response.status + ": " + String(providerMessage).slice(0, 180));
+        error.status = response.status;
+        error.code = "bigballs_provider_error";
+        throw error;
+    }
+    const rows = extractBigBallsRows(payload);
+    const wantedTeams = [homeTeam, awayTeam];
+    const reports = rows.map((row, index) => {
+        const player = row.player || row.athlete || {};
+        const team = row.team || player.team || row.club || {};
+        const fixture = row.fixture || row.match || row.game || {};
+        const playerName = bigBallsText(row.player_name, row.playerName, row.name, player.name, row.full_name);
+        const teamName = bigBallsText(row.team_name, row.teamName, team.name, row.club_name, row.squad_name);
+        const reason = bigBallsText(row.reason, row.injury, row.injury_type, row.absence_reason, row.description, row.comment);
+        const fixtureDate = bigBallsText(row.fixture_date, row.match_date, row.date, fixture.date, fixture.kickoff_utc, fixture.kickoff);
+        const fixtureName = bigBallsText(row.fixture_name, row.match_name, fixture.name, fixture.label);
+        const status = bigBallsText(row.status, row.availability, row.designation);
+        return { row, index, playerName, teamName, reason, fixtureDate, fixtureName, status, playerId: row.player_id || row.playerId || player.id || null };
+    }).filter(item => {
+        if (!item.playerName || !item.teamName) return false;
+        const normalizedTeam = normalizeTeamName(item.teamName);
+        return wantedTeams.some(team => {
+            const normalizedWanted = normalizeTeamName(team);
+            return normalizedTeam === normalizedWanted || normalizedTeam.includes(normalizedWanted) || normalizedWanted.includes(normalizedTeam);
+        });
+    });
+    const meta = payload.meta || payload.metadata || {};
+    return { league, rows: reports, meta, fetchedAt: new Date().toISOString(), totalProviderRows: rows.length };
+}
+
 // Structured absentee-report endpoint. Publication headlines are leads, not official confirmation.
 const absenteeReportCache = new Map();
 const ABSENTEE_REPORT_CACHE_TTL_MS = 10 * 60 * 1000;
@@ -2140,6 +2252,75 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
         return res.json(cached.data);
     }
 
+    try {
+        // Big Balls is the selected primary structured provider. Do not silently fall back
+        // to news-search or another AI provider when this integration is unavailable.
+        const bigBalls = await fetchBigBallsFootballAbsences(homeTeam, awayTeam, req.query.competition);
+        const reports = bigBalls.rows.map(item => ({
+            player: item.playerName,
+            team: item.teamName,
+            reason: item.reason || null,
+            providerStatus: item.status || null,
+            reportedStatus: "availability_not_established",
+            providerRecordType: "absence_record",
+            fixtureDate: item.fixtureDate || null,
+            fixture: item.fixtureName || null,
+            playerId: item.playerId,
+            sourceLabel: "Football Genie • BIG BALLS Data",
+            sourceLinkHidden: true,
+            currentAvailabilityVerified: false,
+            evidenceNote: "Provider absence record; this record alone does not confirm the player is unavailable for the requested upcoming fixture."
+        }));
+        const result = {
+            status: reports.length ? "provider_absence_records_found" : "no_provider_absence_records_for_teams",
+            fixture: { home: homeTeam, away: awayTeam },
+            generatedAt: new Date().toISOString(),
+            provider: "BIG BALLS Data",
+            providerLeague: bigBalls.league,
+            providerAsOf: bigBalls.meta.as_of || bigBalls.meta.asOf || bigBalls.meta.updated_at || null,
+            providerStale: typeof bigBalls.meta.stale === "boolean" ? bigBalls.meta.stale : null,
+            providerRecordCount: reports.length,
+            providerTotalLeagueRecords: bigBalls.totalProviderRows,
+            reports,
+            evidence: reports.map((report, index) => ({
+                evidenceId: "BB" + (index + 1),
+                player: report.player,
+                team: report.team,
+                reason: report.reason,
+                fixtureDate: report.fixtureDate,
+                fixture: report.fixture,
+                providerStatus: report.providerStatus,
+                currentAvailabilityVerified: false
+            })),
+            sourcePolicy: {
+                primaryProvider: "BIG BALLS Data",
+                officialClubConfirmationStillPreferred: true,
+                historicalAbsenceIsNotCurrentUnavailability: true,
+                outboundPublisherLinksShown: false
+            },
+            importantNotice: "BIG BALLS Data is the structured absentee-data provider. Records are shown as provider-reported absence records; they do not automatically confirm current unavailability for the requested fixture. No prediction probabilities are changed by this endpoint."
+        };
+        absenteeReportCache.set(cacheKey, { expiresAt: Date.now() + ABSENTEE_REPORT_CACHE_TTL_MS, data: result });
+        return res.json(result);
+    } catch (error) {
+        const code = error.code || "bigballs_provider_error";
+        const statusCode = code === "bigballs_key_missing" || code === "bigballs_league_unknown" ? 503
+            : error.status === 429 ? 429 : 502;
+        console.error("BIG BALLS absentee provider unavailable:", String(error.message || error).slice(0, 220));
+        return res.status(statusCode).json({
+            status: code === "bigballs_key_missing" ? "provider_not_configured"
+                : code === "bigballs_league_unknown" ? "competition_required" : "provider_unavailable",
+            provider: "BIG BALLS Data",
+            error: code === "bigballs_key_missing"
+                ? "Add BIGBALLSDATA_API_KEY to the Render environment variables."
+                : code === "bigballs_league_unknown"
+                    ? "Supply the fixture competition so Football Genie can select the correct BIG BALLS league."
+                    : "BIG BALLS Data could not return the absentee dataset. No alternative provider was silently substituted."
+        });
+    }
+
+    /* Legacy publication-search pipeline retained in source during migration but is not
+       invoked while BIG BALLS is the configured primary absentee provider.
     try {
         const newsUrl = new URL("/api/match-intelligence/news", req.protocol + "://" + req.get("host"));
         newsUrl.searchParams.set("homeTeam", homeTeam);
@@ -3148,6 +3329,7 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
             status: "absentee_intelligence_unavailable",
             error: "Football Genie could not prepare the absentee report. No player availability has been guessed."
         });
+    */
     }
 });
 
