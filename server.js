@@ -2390,9 +2390,17 @@ async function fetchBigBallsFootballAbsences(homeTeam, awayTeam, competition) {
         for (const row of result.rows) {
             const player = row.player || row.athlete || {};
             const team = row.team || player.team || row.club || {};
-            const teamName = bigBallsText(row.team_name, row.teamName,
+            const reportedTeamName = bigBallsText(row.team_name, row.teamName,
                 typeof team === "string" ? team : team.name,
-                row.club_name, row.squad_name) || result.requestedTeam;
+                row.club_name, row.squad_name);
+            const selectedTeamMatch = !reportedTeamName ||
+                [homeTeam, awayTeam].some(selected => {
+                    const a = normalizeTeamName(reportedTeamName);
+                    const b = normalizeTeamName(selected);
+                    return a === b || a.includes(b) || b.includes(a);
+                });
+            if (!selectedTeamMatch) continue;
+            const teamName = reportedTeamName || result.requestedTeam;
             const playerName = bigBallsText(row.player_name, row.playerName, row.name, player.name, row.full_name);
             const reason = bigBallsText(row.reason, row.injury, row.injury_type, row.absence_reason, row.description, row.comment);
             const fixture = row.fixture || row.match || row.game || {};
