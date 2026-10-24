@@ -1527,18 +1527,12 @@ app.get("/api/match-intelligence/news", async (req, res) => {
             officialPublisherDomain: entry.domain
         }];
     });
+    // Approved free-first publication sources only: Google News, BBC Sport,
+    // Sky Sports and The Athletic. Bing and GDELT were removed from live searches.
     const providers = [
         { name: "Google News RSS - fixture", url: googleUrl, timeoutMs: 6500 },
         { name: "Google News RSS - home team", url: teamGoogleUrl(homeTeamQuery), timeoutMs: 6500, searchTeam: homeTeam },
         { name: "Google News RSS - away team", url: teamGoogleUrl(awayTeamQuery), timeoutMs: 6500, searchTeam: awayTeam },
-        // Bing News RSS provides original publisher URLs via an encoded apiclick link.
-        { name: "Bing News RSS", url: bingUrl(bingQuery), timeoutMs: 6500 },
-        { name: "Bing News RSS - home team", url: bingUrl(bingHomeQuery), timeoutMs: 6500, searchTeam: homeTeam },
-        { name: "Bing News RSS - away team", url: bingUrl(bingAwayQuery), timeoutMs: 6500, searchTeam: awayTeam },
-        ...officialBingProviders,
-        // GDELT returns original publisher URLs, avoiding Google News wrapper resolution
-        // and providing an independent fallback when Google News pages are rate-limited.
-        { name: "GDELT News Search", url: gdeltUrl, timeoutMs: 4500, format: "json" },
         ...officialProviders,
         { name: "BBC Sport Football RSS", url: "https://feeds.bbci.co.uk/sport/football/rss.xml", timeoutMs: 6500 },
         { name: "Sky Sports Football RSS", url: "https://www.skysports.com/rss/11095", timeoutMs: 6500 },
