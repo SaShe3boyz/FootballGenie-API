@@ -1884,8 +1884,12 @@ app.get("/api/match-intelligence/news", async (req, res) => {
         if (item.hasSpamSignals) { filterDiagnostics.spamSignals++; return false; }
         if (item.hasHeadlineNoise) { filterDiagnostics.headlineNoise++; return false; }
         if (item.publishedAt === null || item.ageDays === null) { filterDiagnostics.missingOrInvalidDate++; return false; }
-        if (item.ageDays < 0) { filterDiagnostics.futureDates++; return false; }
-        if (item.ageDays > FOOTBALL_NEWS_MAX_AGE_DAYS) { filterDiagnostics.staleDates++; return false; }
+        const publishedTimestamp = Date.parse(item.publishedAt);
+        if (!Number.isFinite(publishedTimestamp) || publishedTimestamp > now) {
+            filterDiagnostics.futureDates++;
+            return false;
+        }
+        if (now - publishedTimestamp > maxAgeMs) { filterDiagnostics.staleDates++; return false; }
         if (item.fixtureRelevance === "other_fixture_excluded_from_analysis") { filterDiagnostics.conflictingOpponent++; return false; }
         // A lineup report for a different match must never leak into this fixture's
         // Team News just because one selected club is mentioned in the headline.
