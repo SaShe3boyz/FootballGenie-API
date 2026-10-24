@@ -3004,7 +3004,12 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
                 evidence.officialCompetitionSource === true ||
                 evidence.sourceTrustTier === "official_competition_website") return true;
             if (evidence.sourceTrustTier !== "reputable_secondary_publication") return false;
-            // Secondary reporting is accepted only as provisional evidence.
+            // Secondary reports are provisional and must be recent and explicitly
+            // relevant to this fixture. Do not surface stale team-background headlines
+            // as current availability for a different upcoming match.
+            const ageHours = Number(report.ageHours);
+            if (!Number.isFinite(ageHours) || ageHours < 0 || ageHours > 72) return false;
+            if (report.fixtureRelevance !== "direct_fixture") return false;
             return report.reportedStatus === "reported_unavailable" ||
                 report.reportedStatus === "doubtful_or_test_pending";
         };
