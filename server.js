@@ -2366,6 +2366,10 @@ async function fetchBigBallsFootballAbsences(homeTeam, awayTeam, competition) {
     // can return an empty dataset. Fetch the selected league explicitly, then
     // filter by the two selected team names locally to handle canonical aliases.
     const url = new URL("https://api.bigballsdata.com/v1/injuries");
+    // The provider's OpenAPI contract requires the sport selector; league pages
+    // document the league selector. Send both so we scope the soccer feed to the
+    // requested competition rather than relying on provider defaults.
+    url.searchParams.set("sport", "football");
     url.searchParams.set("league", league);
     const response = await fetch(url.href, {
         headers: { "Authorization": "Bearer " + apiKey, "Accept": "application/json" },
