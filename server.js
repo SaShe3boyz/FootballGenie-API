@@ -2011,7 +2011,17 @@ app.get("/api/match-intelligence/news", async (req, res) => {
         if (tokens.length) seenHeadlineTokens.push(tokens);
         uniqueParsedItems.push(item);
     }
-    const items = uniqueParsedItems.slice(0, 30).map(({ relevanceScore, isWomensStory, hasSpamSignals, hasHeadlineNoise, hasRelevantAvailabilitySignal, hasTargetTeamAsSubject, ...item }) => item);
+    let items = uniqueParsedItems.slice(0, 30).map(({ relevanceScore, isWomensStory, hasSpamSignals, hasHeadlineNoise, hasRelevantAvailabilitySignal, hasTargetTeamAsSubject, ...item }) => item);
+    // Fetch full text from a small number of publicly accessible publisher pages.
+    // If a site blocks extraction or only exposes a snippet, preserve that snippet.
+    let fullStoryFetches = 0;
+    items = await Promise.all(items.map(async article => {
+        if (fullStoryFetches >= FOOTBALL_NEWS_MAX_ARTICLE_FETCHES || !article.url) return article;
+        fullStoryFetches++;
+        const story = await extractFullNewsStory(article.url);
+        return story ? { ...article, snippet: story, fullStoryExtracted: true } :
+            { ...article, fullStoryExtracted: false };
+    }));
     const fetchedAtMs = Date.now();
     const fixtureSpecificCount = items.filter(item => item.fixtureRelevance === "direct_fixture").length;
     const teamBackgroundCount = items.filter(item => item.fixtureRelevance !== "direct_fixture").length;
