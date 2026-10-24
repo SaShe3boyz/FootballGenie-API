@@ -1133,6 +1133,52 @@ const footballNewsCache = new Map();
 const FOOTBALL_NEWS_CACHE_TTL_MS = 5 * 60 * 1000;
 const FOOTBALL_NEWS_MAX_AGE_DAYS = 7;
 
+const FOOTBALL_NEWS_MAX_ARTICLE_FETCHES = 5;
+async function extractFullNewsStory(articleUrl) {
+    if (!/^https?:\/\//i.test(String(articleUrl || ""))) return null;
+    try {
+        const response = await fetch(articleUrl, {
+            headers: {
+                "User-Agent": "Mozilla/5.0 (compatible; FootballGenie/1.0; +https://football-genie-api.onrender.com)",
+                "Accept": "text/html,application/xhtml+xml"
+            },
+            signal: AbortSignal.timeout(6500),
+            redirect: "follow"
+        });
+        if (!response.ok) return null;
+        const type = response.headers.get("content-type") || "";
+        if (!/text\/html|application\/xhtml\+xml/i.test(type)) return null;
+        const html = (await response.text()).slice(0, 1500000);
+        const decodeHtml = value => String(value || "")
+            .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1")
+            .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, " ")
+            .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, " ")
+            .replace(/<[^>]+>/g, " ")
+            .replace(/&nbsp;|&#160;/gi, " ")
+            .replace(/&amp;/gi, "&").replace(/&quot;/gi, '"')
+            .replace(/&#39;|&apos;/gi, "'").replace(/&lt;/gi, "<").replace(/&gt;/gi, ">")
+            .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(Number(n)))
+            .replace(/&#x([0-9a-f]+);/gi, (_, n) => String.fromCodePoint(parseInt(n, 16)))
+            .replace(/\s+/g, " ").trim();
+        const candidates = [];
+        const articleBodyMatches = [...html.matchAll(/"articleBody"\s*:\s*"((?:\\.|[^"\\])*)"/gi)];
+        for (const match of articleBodyMatches) {
+            try { candidates.push(decodeHtml(JSON.parse('"' + match[1] + '"'))); } catch (_) {}
+        }
+        for (const match of html.matchAll(/<article\b[^>]*>([\s\S]*?)<\/article>/gi)) {
+            const text = decodeHtml(match[1]);
+            if (text.length > 300) candidates.push(text);
+        }
+        const ogDescription = (html.match(/<meta\b[^>]*(?:property|name)=["'](?:og:description|description)["'][^>]*content=["']([^"']+)["'][^>]*>/i) || [])[1];
+        if (ogDescription) candidates.push(decodeHtml(ogDescription));
+        const clean = candidates.sort((a, b) => b.length - a.length)[0];
+        if (!clean || clean.length < 350) return null;
+        return clean.slice(0, 10000);
+    } catch (_) {
+        return null;
+    }
+}
+
 function decodeNewsXml(value) {
     return String(value || "")
         .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1")
@@ -1672,7 +1718,7 @@ app.get("/api/match-intelligence/news", async (req, res) => {
                 status: "stale_news_fallback",
                 providersAttempted,
                 providerErrors,
-                importantNotice: "Live news providers are currently unavailable or rate-limited. These are cached search leads, not verified player-availability records. Check the original sources before kickoff.",
+                importantNotice: "",
                 cache: {
                     status: "stale_fallback",
                     fetchedAt: cached.fetchedAt,
