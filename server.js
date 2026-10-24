@@ -2598,7 +2598,7 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
                                 String(evidence.snippet || "").toLowerCase().includes(String(team || "").toLowerCase()),
                             exactFixtureAvailabilityVerified: evidence.originalSourcePageFetched === true &&
                                 String(evidence.snippet || "").toLowerCase().includes(String(player || "").toLowerCase()) &&
-                                /\\b(?:ruled out|will be without|will miss|set to miss|unavailable|could return|may return|doubtful|a doubt)\\b/i.test(evidence.snippet || ""),
+                                /(?:ruled out|will be without|will miss|set to miss|unavailable|could return|may return|doubtful|a doubt)/i.test(evidence.snippet || ""),
                             headlineOnly: evidence.originalSourcePageFetched !== true
                         }
                     }];") + "\\b", "i").test(evidence.snippet || "") &&
@@ -2607,7 +2607,7 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
                             exactFixtureAvailabilityVerified: evidence.originalSourcePageFetched === true &&
                                 new RegExp("\\b" + player.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\                        extractionMethod: "literal_headline_phrase"
                     }];") + "\\b", "i").test(evidence.snippet || "") &&
-                                /\\b(?:ruled out|will be without|will miss|set to miss|unavailable|could return|may return|doubtful|a doubt)\\b/i.test(evidence.snippet || ""),
+                                /(?:ruled out|will be without|will miss|set to miss|unavailable|could return|may return|doubtful|a doubt)/i.test(evidence.snippet || ""),
                             headlineOnly: evidence.originalSourcePageFetched !== true
                         }
                     }];
