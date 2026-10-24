@@ -1131,7 +1131,7 @@ app.get("/api/match-intelligence/injuries", async (req, res) => {
 // Keep recent, team-relevant stories and label the evidence so the app can distinguish stale reports.
 const footballNewsCache = new Map();
 const FOOTBALL_NEWS_CACHE_TTL_MS = 5 * 60 * 1000;
-const FOOTBALL_NEWS_MAX_AGE_DAYS = 14;
+const FOOTBALL_NEWS_MAX_AGE_DAYS = 7;
 
 function decodeNewsXml(value) {
     return String(value || "")
@@ -1702,7 +1702,7 @@ app.get("/api/match-intelligence/news", async (req, res) => {
         const link = newsXmlTag(block, "link") || decodeNewsXml(atomLink);
         const publishedAt = newsXmlTag(block, "pubDate") || newsXmlTag(block, "published") || newsXmlTag(block, "updated");
         const description = (newsXmlTag(block, "description") || newsXmlTag(block, "summary") || newsXmlTag(block, "content"))
-            .replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").slice(0, 500);
+            .replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").slice(0, 1800);
         const searchTeam = newsXmlTag(block, "searchteam");
         const searchProvider = newsXmlTag(block, "searchprovider");
         const sourceTagMatch = block.match(/<(?:[A-Za-z0-9_.-]+:)?source\b([^>]*)>([\s\S]*?)<\/(?:[A-Za-z0-9_.-]+:)?source>/i);
@@ -1996,7 +1996,8 @@ app.get("/api/match-intelligence/news", async (req, res) => {
             googleNewsLinksMatchedToBingPublisher: bingPublisherLinksMatched
         },
         count: items.length,
-        articles: items,
+        articles: items.map(article => ({ ...article, fullInformation: article.snippet || article.title, brandSignature: "FOOTBALLGENIE" })),
+        brandSignature: "FOOTBALLGENIE",
         importantNotice: "News items are search leads, not verified player-availability records. Headlines that clearly name a different opponent are excluded to reduce cross-fixture contamination. Articles with missing or future publication dates are excluded. Open the original source and verify the exact fixture, player, team, and availability before changing a prediction. 'Confirmed' is a wording signal, not independent verification. No results does not mean there are no injuries."
     };
     footballNewsCache.set(cacheKey, {
@@ -2036,6 +2037,7 @@ app.get("/api/match-intelligence/news", async (req, res) => {
             return {
                 ...article,
                 url: null,
+                brandSignature: "FOOTBALLGENIE",
                 sourceLabel: article.officialClubSource
                     ? publisherLabel + " • Official club source"
                     : publisherLabel,
