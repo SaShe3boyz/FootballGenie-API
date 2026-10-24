@@ -1907,7 +1907,7 @@ app.get("/api/match-intelligence/news", async (req, res) => {
     const isReputableFallbackPublisherUrl = value => {
         try {
             const host = new URL(value).hostname.toLowerCase().replace(/^www\./, "");
-            return ["bbc.co.uk", "bbc.com", "skysports.com", "theathletic.com", "nytimes.com"]
+            return ["bbc.co.uk", "bbc.com", "skysports.com", "theathletic.com"]
                 .some(domain => host === domain || host.endsWith("." + domain));
         } catch (_) { return false; }
     };
