@@ -2418,10 +2418,27 @@ async function fetchBigBallsFootballAbsences(homeTeam, awayTeam, competition) {
     });
 
     const meta = payload.meta || payload.metadata || {};
+    const dataEnvelope = payload.data && typeof payload.data === "object" && !Array.isArray(payload.data)
+        ? payload.data : {};
+    // Safe provider diagnostics: expose response shape and coverage metadata, never
+    // credentials or raw player records. This helps distinguish empty provider data
+    // from an extraction/schema problem while keeping Team News provider-only.
+    const diagnostics = {
+        httpStatus: response.status,
+        topLevelKeys: Object.keys(payload),
+        dataType: Array.isArray(payload.data) ? "array" : typeof payload.data,
+        dataKeys: Object.keys(dataEnvelope),
+        dataCount: Number.isFinite(dataEnvelope.count) ? dataEnvelope.count : null,
+        injuriesArrayLength: Array.isArray(dataEnvelope.injuries) ? dataEnvelope.injuries.length : null,
+        metaKeys: Object.keys(meta),
+        metaNote: bigBallsText(meta.note, meta.message, meta.coverage && meta.coverage.note),
+        ignoredParams: Array.isArray(meta.ignored_params) ? meta.ignored_params : null
+    };
     return {
         league,
         rows: reports,
         meta,
+        diagnostics,
         fetchedAt: new Date().toISOString(),
         totalProviderRows: allRows.length
     };
