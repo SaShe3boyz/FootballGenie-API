@@ -2750,13 +2750,22 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
             } catch (error) {
                 // Keep the endpoint available, but expose a safe diagnostic without credentials.
                 const message = String(error && error.message || "unknown error");
-                aiExtractionDiagnostics.status = "provider_or_parse_error";
+                // Never return raw provider errors to the public endpoint: they may include
+                // organization identifiers, account metadata, or other provider response details.
+                const lowerMessage = message.toLowerCase();
+                const safeErrorCode = /\\b429\\b|rate limit|tokens per day|too many requests/.test(lowerMessage)
+                    ? "provider_rate_limited"
+                    : /timeout|timed out|aborterror/.test(lowerMessage)
+                        ? "provider_timeout"
+                        : /no ai provider is configured/.test(lowerMessage)
+                            ? "no_provider_configured"
+                            : /json|parse|response did not contain/.test(lowerMessage)
+                                ? "provider_response_parse_error"
+                                : "provider_request_failed";
+                aiExtractionDiagnostics.status = safeErrorCode;
                 aiExtractionDiagnostics.errorType = error && error.name ? String(error.name).slice(0, 60) : "Error";
-                aiExtractionDiagnostics.errorMessage = message
-                    .replace(/(?:Bearer\s+)[A-Za-z0-9._-]+/gi, "Bearer [redacted]")
-                    .replace(/(?:key|token|authorization)\s*[:=]\s*\S+/gi, "$1=[redacted]")
-                    .slice(0, 180);
-                console.warn("Absentee extraction fell back to deterministic evidence:", message.slice(0, 180));
+                aiExtractionDiagnostics.errorMessage = safeErrorCode;
+                console.warn("Absentee extraction fell back to deterministic evidence:", safeErrorCode);
             }
         } else if (!articles.length) {
             aiExtractionDiagnostics.status = "skipped_no_articles";
