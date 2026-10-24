@@ -529,6 +529,35 @@ app.get("/api/matches", async (req, res) => {
             return data;
         }));
 
+        // Query LIVE separately from date windows. Some provider schedules omit or lag
+        // live status when using date filters, so this independent status query gives live
+        // matches priority and prevents the schedule from hiding matches in progress.
+        let liveMatches = [];
+        try {
+            const liveResponse = await fetch(
+                "https://api.football-data.org/v4/matches?status=LIVE",
+                {
+                    headers: { "X-Auth-Token": API_TOKEN },
+                    signal: AbortSignal.timeout(10000)
+                }
+            );
+            const liveText = await liveResponse.text();
+            let liveData = {};
+            try {
+                liveData = JSON.parse(liveText);
+            } catch (_) {
+                liveData = {};
+            }
+            if (liveResponse.ok && Array.isArray(liveData.matches)) {
+                liveMatches = liveData.matches;
+            } else {
+                console.warn("Live matches refresh was unavailable (HTTP " + liveResponse.status + ").");
+            }
+        } catch (liveError) {
+            // A live-query failure must not block scheduled fixture retrieval.
+            console.warn("Live matches refresh failed:", liveError.message);
+        }
+
         const allMatches = new Map();
         const combinedData = windowResults[0] || {};
         let playedCount = 0;
@@ -537,6 +566,11 @@ app.get("/api/matches", async (req, res) => {
                 if (match && match.id != null) allMatches.set(match.id, match);
             }
             playedCount += Number(data.resultSet && data.resultSet.played || 0);
+        }
+        // Merge independently queried live matches by ID, overriding stale status/details
+        // from a date-window result if the same match appears in both responses.
+        for (const match of liveMatches) {
+            if (match && match.id != null) allMatches.set(match.id, match);
         }
 
         const all = Array.from(allMatches.values());
