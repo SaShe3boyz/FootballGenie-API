@@ -1838,7 +1838,7 @@ async function requestAbsenteeAIAnswer(systemInstruction, userContent) {
     // If Gemini is configured, use it exclusively for absentee extraction.
     // A Gemini failure must not silently switch this task to Groq or OpenAI.
     if (process.env.GEMINI_API_KEY) {
-        const model = process.env.GEMINI_MODEL || "gemini-2.5-flash";
+        const model = process.env.GEMINI_MODEL || "gemini-3.8-flash";
         const endpoint = "https://generativelanguage.googleapis.com/v1beta/models/" +
             encodeURIComponent(model) + ":generateContent?key=" +
             encodeURIComponent(process.env.GEMINI_API_KEY);
