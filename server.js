@@ -2479,7 +2479,7 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
             const teamFromSubject = subjectTeams.length === 1 ? subjectTeams[0] : null;
             const matches = [...availabilityText.matchAll(namedAvailabilityPattern)];
             // Some official updates phrase absence before the player's name ("will be without Saka").
-            const reverseAbsencePattern = /\b(?:will be without|will not have|will be missing|is without)\s+((?:[A-Z][A-Za-z'’.-]{2,}(?:\s+[A-Z][A-Za-z'’.-]{1,}){0,2}))/gi;
+            const reverseAbsencePattern = /\b(?:will be without|will not have|will be missing|is without)\s+((?:[A-Z][A-Za-z'’.-]{2,}(?:\s+[A-Z][A-Za-z'’.-]{1,}){0,2}?))(?=\s+(?:after|before|when|because|during|following|as|who|which)\b|[.,;]|$)/gi;
             for (const reverseMatch of availabilityText.matchAll(reverseAbsencePattern)) {
                 const synthetic = [];
                 synthetic[0] = reverseMatch[0];
@@ -2531,7 +2531,7 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
                         reason: title.slice(0, 220),
                         evidenceId: evidence.evidenceId, title, source: evidence.source,
                         evidenceQuote: String(match[0] || "").trim(),
-                        publishedAt: evidence.publishedAt, url: evidence.url,
+                        publishedAt: evidence.publishedAt, url: evidence.url || evidence.originalSourcePageUrl || null,
                         sourceLinkType: (() => {
                             try {
                                 const host = new URL(evidence.url).hostname.toLowerCase();
