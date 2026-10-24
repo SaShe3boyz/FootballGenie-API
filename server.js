@@ -1999,7 +1999,7 @@ app.get("/api/match-intelligence/news", async (req, res) => {
             // Prefer the publisher name supplied by the news feed; aggregator URLs
             // (such as MSN) are not necessarily the original publisher.
             if (feedPublisher && !/^(Google News RSS|Bing News RSS|GDELT News Search|BBC Sport Football RSS|Sky Sports Football RSS|The Athletic Football RSS)/i.test(feedPublisher)) {
-                publisherLabel = feedPublisher.replace(/\\s+on MSN$/i, "").trim();
+                publisherLabel = feedPublisher.replace(/\s+on MSN$/i, "").trim();
             } else {
                 try {
                     const host = new URL(article.url || article.publisherSourceUrl || "").hostname.toLowerCase().replace(/^www\\./, "");
