@@ -2319,8 +2319,8 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
         });
     }
 
-    /* Legacy publication-search pipeline retained in source during migration but is not
-       invoked while BIG BALLS is the configured primary absentee provider.
+    // Legacy pipeline retained but deliberately disabled while BIG BALLS is primary.
+    if (false) {
     try {
         const newsUrl = new URL("/api/match-intelligence/news", req.protocol + "://" + req.get("host"));
         newsUrl.searchParams.set("homeTeam", homeTeam);
@@ -3330,7 +3330,7 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
             error: "Football Genie could not prepare the absentee report. No player availability has been guessed."
         });
     }
-    */
+    }
 });
 
 // Groq is the primary AI provider for Football Genie.
