@@ -2185,7 +2185,7 @@ async function fetchBigBallsFootballAbsences(homeTeam, awayTeam, competition) {
         throw error;
     }
     const url = new URL("https://api.bigballsdata.com/v1/injuries");
-    url.searchParams.set("sport", "football");
+    // BIG BALLS league-specific injury pages document league-only requests.
     url.searchParams.set("league", league);
     const response = await fetch(url.href, {
         headers: { "Authorization": "Bearer " + apiKey, "Accept": "application/json" },
