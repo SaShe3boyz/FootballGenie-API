@@ -1989,12 +1989,12 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
                     } else {
                         const html = (await response.text()).slice(0, 2_000_000);
                         const visibleText = html
-                            .replace(/<(script|style|noscript|svg)\\b[^>]*>[\\s\\S]*?<\\/\\1>/gi, " ")
+                            .replace(/<(script|style|noscript|svg)\b[^>]*>[\s\S]*?<\/\1>/gi, " ")
                             .replace(/<[^>]+>/g, " ")
                             .replace(/&nbsp;|&#160;/gi, " ")
                             .replace(/&amp;/gi, "&").replace(/&quot;/gi, '"')
                             .replace(/&#39;|&apos;/gi, "'").replace(/&lt;/gi, "<").replace(/&gt;/gi, ">")
-                            .replace(/\\s+/g, " ").trim();
+                            .replace(/\s+/g, " ").trim();
                         const teamNames = [homeTeam, awayTeam];
                         const matchedTeams = teamNames.filter(team => visibleText.toLowerCase().includes(team.toLowerCase()));
                         if (matchedTeams.length) {
