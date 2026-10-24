@@ -2024,6 +2024,15 @@ async function requestAbsenteeAIAnswer(systemInstruction, userContent) {
             const error = new Error("Gemini absentee extraction HTTP " + response.status +
                 (providerMessage ? ": " + providerMessage.slice(0, 180) : "."));
             error.status = response.status;
+            // Keep only non-secret quota diagnostics; never expose request URLs or API keys.
+            const retryHeader = response.headers && response.headers.get
+                ? response.headers.get("retry-after") : null;
+            const retryAfterSeconds = retryHeader && Number.isFinite(Number(retryHeader))
+                ? Number(retryHeader) : null;
+            error.providerDetails = {
+                message: providerMessage.slice(0, 240),
+                retryAfterSeconds
+            };
             throw error;
         }
         const answer = data.candidates && data.candidates[0] &&
@@ -2667,8 +2676,11 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
             openaiConfigured: Boolean(process.env.OPENAI_API_KEY),
             status: (process.env.GEMINI_API_KEY || process.env.GROQ_API_KEY || process.env.OPENAI_API_KEY)
                 ? "waiting_for_extraction" : "no_provider_configured",
+            httpStatus: null,
             errorType: null,
-            errorMessage: null
+            errorMessage: null,
+            quotaCategory: null,
+            retryAfterSeconds: null
         };
 
         // Deterministic fallback: find literal player names next to availability wording
@@ -2884,9 +2896,23 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
         if (articles.length && (process.env.GEMINI_API_KEY || process.env.GROQ_API_KEY || process.env.OPENAI_API_KEY)) {
             aiExtractionDiagnostics.attempted = true;
             const systemInstruction = "You extract possible player-absence reports from supplied football publication evidence. Return only valid JSON with a top-level reports array. Each report must contain playerNameAsWritten, team, reportedStatus, reasonAsWritten, and evidenceId. reportedStatus must be one of reported_unavailable, doubtful_or_test_pending, or availability_not_established. Never invent players, expand a surname into a full name, infer an injury, or use outside knowledge. playerNameAsWritten must be a literal player name or surname appearing in that article title/snippet. Only report a player if the evidence text names them. Do not treat a generic team injury headline as proof that every named player is absent. Team must be exactly one of the two supplied teams. If no player is named, return an empty reports array.";
+            // Keep the prompt compact to reduce provider token pressure and avoid
+            // sending long scraped pages when only a short availability passage matters.
+            const compactEvidence = articles.slice(0, 12).map(item => ({
+                evidenceId: item.evidenceId,
+                title: String(item.title || "").slice(0, 240),
+                source: String(item.source || "").slice(0, 100),
+                sourceTrustTier: item.sourceTrustTier || "unverified_publication",
+                searchTeam: item.searchTeam || null,
+                publishedAt: item.publishedAt || null,
+                fixtureRelevance: item.fixtureRelevance || "unknown",
+                availabilityAssessment: item.availabilityAssessment || "availability_not_established",
+                snippet: String(item.snippet || "").slice(0, 1400)
+            }));
             const userContent = "Fixture: " + homeTeam + " vs " + awayTeam +
                 "\nTeams allowed: " + JSON.stringify([homeTeam, awayTeam]) +
-                "\nPublication evidence (search leads, not official confirmation):\n" + JSON.stringify(articles);
+                "\nExtract only literal names/status wording from these compact evidence leads; do not infer missing information.\n" +
+                JSON.stringify(compactEvidence);
             try {
                 const aiResult = await requestAbsenteeAIAnswer(systemInstruction, userContent);
                 aiModel = aiResult.model;
@@ -2963,6 +2989,20 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
                 const lowerMessage = message.toLowerCase();
                 const providerHttpStatus = Number(error && error.status) ||
                     Number((lowerMessage.match(/\\bhttp (\\d{3})\\b/) || [])[1]) || null;
+                const providerDetails = error && error.providerDetails && typeof error.providerDetails === "object"
+                    ? error.providerDetails : {};
+                const quotaText = String(providerDetails.message || "");
+                const quotaLower = quotaText.toLowerCase();
+                aiExtractionDiagnostics.httpStatus = providerHttpStatus;
+                aiExtractionDiagnostics.retryAfterSeconds = Number.isFinite(Number(providerDetails.retryAfterSeconds))
+                    ? Number(providerDetails.retryAfterSeconds) : null;
+                aiExtractionDiagnostics.quotaCategory = /daily|per day|daily limit|requests per day|free.?tier.*day/.test(quotaLower)
+                    ? "daily_quota"
+                    : /tokens per minute|input token|token.*minute|tpm/.test(quotaLower)
+                        ? "token_rate_limit"
+                        : /requests per minute|rpm|rate limit|too many requests/.test(quotaLower)
+                            ? "request_rate_limit"
+                            : providerHttpStatus === 429 ? "provider_limit_unspecified" : null;
                 const safeErrorCode = providerHttpStatus === 429 ||
                         /\\b429\\b|rate limit|tokens per day|too many requests/.test(lowerMessage)
                     ? "provider_rate_limited"
