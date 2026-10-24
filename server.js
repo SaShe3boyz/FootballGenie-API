@@ -1994,22 +1994,29 @@ app.get("/api/match-intelligence/news", async (req, res) => {
     return res.json({
         ...result,
         articles: result.articles.map(article => {
-            let publisherLabel = "Publisher not verified from the available feed link";
-            try {
-                const host = new URL(article.url || "").hostname.toLowerCase().replace(/^www\\./, "");
-                if (host && host !== "news.google.com" && !host.endsWith(".news.google.com") &&
-                    host !== "bing.com" && !host.endsWith(".bing.com")) {
-                    const publisherNames = {
-                        "bbc.co.uk": "BBC Sport", "bbc.com": "BBC Sport",
-                        "skysports.com": "Sky Sports", "theathletic.com": "The Athletic",
-                        "derbyshirelive.co.uk": "Derbyshire Live", "thestar.co.uk": "The Star",
-                        "thestaceywest.com": "The Stacey West", "dcfc.co.uk": "Derby County (official)",
-                        "sufc.co.uk": "Sheffield United (official)"
-                    };
-                    const knownDomain = Object.keys(publisherNames).find(domain => host === domain || host.endsWith("." + domain));
-                    publisherLabel = knownDomain ? publisherNames[knownDomain] : host;
-                }
-            } catch (_) {}
+            let publisherLabel = "Publisher not verified";
+            const feedPublisher = String(article.source || "").trim();
+            // Prefer the publisher name supplied by the news feed; aggregator URLs
+            // (such as MSN) are not necessarily the original publisher.
+            if (feedPublisher && !/^(Google News RSS|Bing News RSS|GDELT News Search|BBC Sport Football RSS|Sky Sports Football RSS|The Athletic Football RSS)/i.test(feedPublisher)) {
+                publisherLabel = feedPublisher.replace(/\\s+on MSN$/i, "").trim();
+            } else {
+                try {
+                    const host = new URL(article.url || article.publisherSourceUrl || "").hostname.toLowerCase().replace(/^www\\./, "");
+                    if (host && host !== "news.google.com" && !host.endsWith(".news.google.com") &&
+                        host !== "bing.com" && !host.endsWith(".bing.com") && host !== "msn.com" && !host.endsWith(".msn.com")) {
+                        const publisherNames = {
+                            "bbc.co.uk": "BBC Sport", "bbc.com": "BBC Sport",
+                            "skysports.com": "Sky Sports", "theathletic.com": "The Athletic",
+                            "derbyshirelive.co.uk": "Derbyshire Live", "thestar.co.uk": "The Star",
+                            "thestaceywest.com": "The Stacey West", "dcfc.co.uk": "Derby County (official)",
+                            "sufc.co.uk": "Sheffield United (official)"
+                        };
+                        const knownDomain = Object.keys(publisherNames).find(domain => host === domain || host.endsWith("." + domain));
+                        if (knownDomain) publisherLabel = publisherNames[knownDomain];
+                    }
+                } catch (_) {}
+            }
             return {
                 ...article,
                 url: null,
