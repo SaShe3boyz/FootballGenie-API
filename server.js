@@ -2601,16 +2601,7 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
                                 /(?:ruled out|will be without|will miss|set to miss|unavailable|could return|may return|doubtful|a doubt)/i.test(evidence.snippet || ""),
                             headlineOnly: evidence.originalSourcePageFetched !== true
                         }
-                    }];") + "\\b", "i").test(evidence.snippet || "") &&
-                                new RegExp("\\b" + team.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\                        extractionMethod: "literal_headline_phrase"
-                    }];") + "\\b", "i").test(evidence.snippet || ""),
-                            exactFixtureAvailabilityVerified: evidence.originalSourcePageFetched === true &&
-                                new RegExp("\\b" + player.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\                        extractionMethod: "literal_headline_phrase"
-                    }];") + "\\b", "i").test(evidence.snippet || "") &&
-                                /(?:ruled out|will be without|will miss|set to miss|unavailable|could return|may return|doubtful|a doubt)/i.test(evidence.snippet || ""),
-                            headlineOnly: evidence.originalSourcePageFetched !== true
-                        }
-                    }];
+                                        }];
                 });
             });
         });
