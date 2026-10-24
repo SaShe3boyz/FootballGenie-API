@@ -1904,15 +1904,26 @@ app.get("/api/match-intelligence/news", async (req, res) => {
                 host === "evertonfc.com" || host.endsWith(".evertonfc.com");
         } catch (_) { return false; }
     };
-    parsedItems = parsedItems.map(item => ({
-        ...item,
-        // Google News RSS wraps article links, but its <source url> attribute
-        // identifies the publisher domain. Trust it only when it matches a supported
-        // official club domain; keep the wrapped article URL as an unverified lead.
-        officialClubSource: isOfficialClubUrl(item.url) || isOfficialClubUrl(item.publisherSourceUrl),
-        sourceTrustTier: (isOfficialClubUrl(item.url) || isOfficialClubUrl(item.publisherSourceUrl))
-            ? "official_club_website" : "secondary_publication"
-    }));
+    const isReputableFallbackPublisherUrl = value => {
+        try {
+            const host = new URL(value).hostname.toLowerCase().replace(/^www\./, "");
+            return ["bbc.co.uk", "bbc.com", "skysports.com", "theathletic.com", "nytimes.com"]
+                .some(domain => host === domain || host.endsWith("." + domain));
+        } catch (_) { return false; }
+    };
+    parsedItems = parsedItems.map(item => {
+        const officialClubSource = isOfficialClubUrl(item.url) || isOfficialClubUrl(item.publisherSourceUrl);
+        const reputableFallbackSource = !officialClubSource &&
+            (isReputableFallbackPublisherUrl(item.url) || isReputableFallbackPublisherUrl(item.publisherSourceUrl));
+        return {
+            ...item,
+            // Official clubs remain the primary source. Only a small allowlist of
+            // established football publishers can be used as provisional fallback.
+            officialClubSource,
+            sourceTrustTier: officialClubSource ? "official_club_website"
+                : reputableFallbackSource ? "reputable_secondary_publication" : "unverified_publication"
+        };
+    });
     parsedItems.sort((a, b) => Number(b.officialClubSource) - Number(a.officialClubSource) ||
         b.relevanceScore - a.relevanceScore ||
         ((a.ageDays === null ? 9999 : a.ageDays) - (b.ageDays === null ? 9999 : b.ageDays)));
@@ -2215,11 +2226,13 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
                 });
             }
         }
-        const nonOfficialArticlesIgnored = rawNewsArticles.filter(article =>
-            article.officialClubSource !== true && article.sourceTrustTier !== "official_club_website"
-        ).length;
+        const trustedEvidenceArticle = article =>
+            article.officialClubSource === true ||
+            article.sourceTrustTier === "official_club_website" ||
+            article.sourceTrustTier === "reputable_secondary_publication";
+        const nonOfficialArticlesIgnored = rawNewsArticles.filter(article => !trustedEvidenceArticle(article)).length;
         let articles = rawNewsArticles
-            .filter(article => article.officialClubSource === true || article.sourceTrustTier === "official_club_website")
+            .filter(trustedEvidenceArticle)
             .slice(0, 30).map((article, index) => ({
             evidenceId: "E" + (index + 1),
             title: String(article.title || "").slice(0, 300),
@@ -2980,20 +2993,20 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
             aiExtractionDiagnostics.status = "skipped_no_articles";
         }
 
-        // Official club websites are the only accepted evidence for absentee reports.
-        // If a club has not published a relevant update, do not fill the gap with
-        // secondary publications or unverified AI inference.
+        // A report must be tied to an actual trusted evidence item. Official
+        // sources may establish confirmed information; allowlisted publications may
+        // only provide provisional reported information, never official confirmation.
         const isOfficialEvidenceReport = report => {
-            if (report.officialPublisherDomainMatch === true ||
-                report.sourceTrustTier === "official_club_website" ||
-                report.sourceTrustTier === "official_competition_website") return true;
             const evidence = articles.find(item => item.evidenceId === report.evidenceId);
-            return !!(evidence && (
-                evidence.officialClubSource === true ||
+            if (!evidence) return false;
+            if (evidence.officialClubSource === true ||
                 evidence.sourceTrustTier === "official_club_website" ||
                 evidence.officialCompetitionSource === true ||
-                evidence.sourceTrustTier === "official_competition_website"
-            ));
+                evidence.sourceTrustTier === "official_competition_website") return true;
+            if (evidence.sourceTrustTier !== "reputable_secondary_publication") return false;
+            // Secondary reporting is accepted only as provisional evidence.
+            return report.reportedStatus === "reported_unavailable" ||
+                report.reportedStatus === "doubtful_or_test_pending";
         };
         const normalizedPlayerText = value => normalizeTeamName(String(value || "").replace(/[^A-Za-z0-9'’ -]/g, " "));
         const hasIndependentCorroboration = report => {
@@ -3034,7 +3047,7 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
             providerFeedDiagnostics: newsData.providerFeedDiagnostics || [],
             publisherLinkResolutionDiagnostics: newsData.publisherLinkResolutionDiagnostics || null,
             sourceAgreementDiagnostics: {
-                policy: "verified_official_club_and_competition_websites_only",
+                policy: "official_first_reputable_publication_fallback",
                 nonOfficialArticlesIgnored,
                 nonOfficialReportsSuppressed
             },
@@ -3073,12 +3086,14 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
                 sourceLinkHidden: true
             })),
             sourcePolicy: {
-                acceptedForAbsenteeClaims: "official_club_websites_only",
-                secondaryPublicationsUsedForAbsenteeClaims: false,
+                acceptedForAbsenteeClaims: "official_club_and_competition_websites_first_reputable_publications_provisional_fallback",
+                secondaryPublicationsUsedForAbsenteeClaims: true,
+                permittedSecondaryPublishers: ["BBC Sport", "Sky Sports", "The Athletic"],
+                secondaryReportsAreProvisional: true,
                 userFacingSource: "Football Genie",
                 outboundPublisherLinksShown: false
             },
-            importantNotice: "Football Genie uses official club website evidence only for player-availability reports. If no relevant official update is found, no absentee claim is made; secondary publications and unverified search leads are not used to fill the gap. Official articles still require relevance and date checks. No prediction probabilities are changed by this endpoint."
+            importantNotice: "Official club and competition sources take priority. When relevant official information is unavailable, only allowlisted reputable publications may provide provisional reported availability; such reports are not official confirmation. Unverified publications are ignored. No prediction probabilities are changed by this endpoint."
         };
         absenteeReportCache.set(cacheKey, { expiresAt: Date.now() + ABSENTEE_REPORT_CACHE_TTL_MS, data: publicResult });
         return res.json(publicResult);
