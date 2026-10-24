@@ -2594,7 +2594,13 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
                                 : "unverified_publication_lead",
                             originalSourceOpened: evidence.originalSourcePageFetched === true,
                             playerClubIndependentlyVerified: evidence.originalSourcePageFetched === true &&
-                                new RegExp("\\b" + player.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\                        extractionMethod: "literal_headline_phrase"
+                                String(evidence.snippet || "").toLowerCase().includes(String(player || "").toLowerCase()) &&
+                                String(evidence.snippet || "").toLowerCase().includes(String(team || "").toLowerCase()),
+                            exactFixtureAvailabilityVerified: evidence.originalSourcePageFetched === true &&
+                                String(evidence.snippet || "").toLowerCase().includes(String(player || "").toLowerCase()) &&
+                                /\\b(?:ruled out|will be without|will miss|set to miss|unavailable|could return|may return|doubtful|a doubt)\\b/i.test(evidence.snippet || ""),
+                            headlineOnly: evidence.originalSourcePageFetched !== true
+                        }
                     }];") + "\\b", "i").test(evidence.snippet || "") &&
                                 new RegExp("\\b" + team.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\                        extractionMethod: "literal_headline_phrase"
                     }];") + "\\b", "i").test(evidence.snippet || ""),
