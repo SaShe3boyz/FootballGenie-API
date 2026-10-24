@@ -1841,6 +1841,12 @@ app.get("/api/match-intelligence/news", async (req, res) => {
         if (item.ageDays < 0) { filterDiagnostics.futureDates++; return false; }
         if (item.ageDays > FOOTBALL_NEWS_MAX_AGE_DAYS) { filterDiagnostics.staleDates++; return false; }
         if (item.fixtureRelevance === "other_fixture_excluded_from_analysis") { filterDiagnostics.conflictingOpponent++; return false; }
+        // A lineup report for a different match must never leak into this fixture's
+        // Team News just because one selected club is mentioned in the headline.
+        if (item.categories.includes("lineup") && item.fixtureRelevance !== "direct_fixture") {
+            filterDiagnostics.conflictingOpponent++;
+            return false;
+        }
         // Direct official-club results from a team-specific official-site search are
         // valuable even when the headline says only "injury update" and does not
         // repeat the club name or an explicit OUT/DOUBTFUL label. Keep them so the
@@ -1896,12 +1902,20 @@ app.get("/api/match-intelligence/news", async (req, res) => {
     const isOfficialClubUrl = value => {
         try {
             const host = new URL(value || "").hostname.toLowerCase();
-            return host === "avfc.co.uk" || host.endsWith(".avfc.co.uk") ||
-                host === "mancity.com" || host.endsWith(".mancity.com") ||
-                host === "rbleipzig.com" || host.endsWith(".rbleipzig.com") ||
-                host === "borussia.com" || host.endsWith(".borussia.com") ||
-                host === "arsenal.com" || host.endsWith(".arsenal.com") ||
-                host === "evertonfc.com" || host.endsWith(".evertonfc.com");
+            const officialDomains = [
+                "arsenal.com", "evertonfc.com", "mancity.com", "avfc.co.uk",
+                "rbleipzig.com", "borussia.com", "liverpoolfc.com", "chelseafc.com",
+                "manutd.com", "tottenhamhotspur.com", "newcastleunited.com",
+                "realmadrid.com", "fcbarcelona.com", "atleticodemadrid.com",
+                "fcbayern.com", "bvb.de", "psg.fr", "juventus.com", "inter.it",
+                "acmilan.com", "sscnapoli.it", "bayer04.de", "eintracht.de",
+                "athletic-club.eus", "realsociedad.eus", "sevillafc.es",
+                "villarrealcf.es", "gironafc.cat", "sslazio.it", "asroma.com",
+                "om.fr", "ol.fr", "asmonaco.com", "slbenfica.pt", "fcporto.pt",
+                "sporting.pt", "sufc.co.uk", "dcfc.co.uk", "fc-koeln.de",
+                "schalke04.de"
+            ];
+            return officialDomains.some(domain => host === domain || host.endsWith("." + domain));
         } catch (_) { return false; }
     };
     const isReputableFallbackPublisherUrl = value => {
@@ -1942,7 +1956,9 @@ app.get("/api/match-intelligence/news", async (req, res) => {
         const tokens = [...new Set(normalizeNewsHeadline(item.title))];
         const nearDuplicate = tokens.length > 0 && seenHeadlineTokens.some(previous => {
             const overlap = tokens.filter(token => previous.includes(token)).length;
-            return overlap / Math.max(tokens.length, previous.length) >= 0.82;
+            // Syndicated injury stories often add/remove a few words or append
+            // a publisher name. Use a slightly more tolerant overlap threshold.
+            return overlap / Math.max(tokens.length, previous.length) >= 0.70;
         });
         if ((dedupeKey && seenNewsItems.has(dedupeKey)) || nearDuplicate) continue;
         if (dedupeKey) seenNewsItems.add(dedupeKey);
