@@ -1835,6 +1835,43 @@ app.get("/api/match-intelligence/news", async (req, res) => {
 
 // Use the configured primary AI provider with the same OpenAI fallback as the main AI chat.
 async function requestAbsenteeAIAnswer(systemInstruction, userContent) {
+    // If Gemini is configured, use it exclusively for absentee extraction.
+    // A Gemini failure must not silently switch this task to Groq or OpenAI.
+    if (process.env.GEMINI_API_KEY) {
+        const model = process.env.GEMINI_MODEL || "gemini-2.5-flash";
+        const endpoint = "https://generativelanguage.googleapis.com/v1beta/models/" +
+            encodeURIComponent(model) + ":generateContent?key=" +
+            encodeURIComponent(process.env.GEMINI_API_KEY);
+        const response = await fetch(endpoint, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                systemInstruction: { parts: [{ text: systemInstruction }] },
+                contents: [{ role: "user", parts: [{ text: userContent }] }],
+                generationConfig: { temperature: 0.1, maxOutputTokens: 1400,
+                    responseMimeType: "application/json" }
+            }),
+            signal: AbortSignal.timeout(25000)
+        });
+        const bodyText = await response.text();
+        let data;
+        try { data = JSON.parse(bodyText); }
+        catch (_) { throw new Error("Gemini absentee extraction returned unreadable data."); }
+        if (!response.ok) {
+            const providerMessage = data && data.error && data.error.message
+                ? String(data.error.message) : "";
+            const error = new Error("Gemini absentee extraction HTTP " + response.status +
+                (providerMessage ? ": " + providerMessage.slice(0, 180) : "."));
+            error.status = response.status;
+            throw error;
+        }
+        const answer = data.candidates && data.candidates[0] &&
+            data.candidates[0].content && Array.isArray(data.candidates[0].content.parts)
+            ? data.candidates[0].content.parts.map(part => String(part.text || "")).join("").trim()
+            : "";
+        if (!answer) throw new Error("Gemini returned an empty absentee extraction.");
+        return { answer, model, provider: "gemini" };
+    }
     let groqFailure = null;
     if (process.env.GROQ_API_KEY) {
         try {
@@ -2462,9 +2499,10 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
         let aiProvider = null;
         const aiExtractionDiagnostics = {
             attempted: false,
+            geminiConfigured: Boolean(process.env.GEMINI_API_KEY),
             groqConfigured: Boolean(process.env.GROQ_API_KEY),
             openaiConfigured: Boolean(process.env.OPENAI_API_KEY),
-            status: (process.env.GROQ_API_KEY || process.env.OPENAI_API_KEY)
+            status: (process.env.GEMINI_API_KEY || process.env.GROQ_API_KEY || process.env.OPENAI_API_KEY)
                 ? "waiting_for_extraction" : "no_provider_configured",
             errorType: null,
             errorMessage: null
@@ -2680,7 +2718,7 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
                     : "Team-background headline only; does not establish availability for this fixture."
         }));
         if (candidateReports.length) extractionStatus = "literal_headline_candidates";
-        if (articles.length && (process.env.GROQ_API_KEY || process.env.OPENAI_API_KEY)) {
+        if (articles.length && (process.env.GEMINI_API_KEY || process.env.GROQ_API_KEY || process.env.OPENAI_API_KEY)) {
             aiExtractionDiagnostics.attempted = true;
             const systemInstruction = "You extract possible player-absence reports from supplied football publication evidence. Return only valid JSON with a top-level reports array. Each report must contain playerNameAsWritten, team, reportedStatus, reasonAsWritten, and evidenceId. reportedStatus must be one of reported_unavailable, doubtful_or_test_pending, or availability_not_established. Never invent players, expand a surname into a full name, infer an injury, or use outside knowledge. playerNameAsWritten must be a literal player name or surname appearing in that article title/snippet. Only report a player if the evidence text names them. Do not treat a generic team injury headline as proof that every named player is absent. Team must be exactly one of the two supplied teams. If no player is named, return an empty reports array.";
             const userContent = "Fixture: " + homeTeam + " vs " + awayTeam +
