@@ -1131,7 +1131,7 @@ app.get("/api/match-intelligence/injuries", async (req, res) => {
 // Keep recent, team-relevant stories and label the evidence so the app can distinguish stale reports.
 const footballNewsCache = new Map();
 const FOOTBALL_NEWS_CACHE_TTL_MS = 5 * 60 * 1000;
-const FOOTBALL_NEWS_MAX_AGE_DAYS = 30;
+const FOOTBALL_NEWS_MAX_AGE_DAYS = 14;
 
 function decodeNewsXml(value) {
     return String(value || "")
@@ -1932,10 +1932,21 @@ app.get("/api/match-intelligence/news", async (req, res) => {
     // out by repeated fixture previews before absentee extraction runs.
     const uniqueParsedItems = [];
     const seenNewsItems = new Set();
+    const seenHeadlineTokens = [];
+    const normalizeNewsHeadline = value => String(value || "").toLowerCase()
+        .replace(/&amp;/g, "and").replace(/[^a-z0-9]+/g, " ")
+        .replace(/\b(sheffield united|derby county|football club|fc|afc|preview|latest|update|news)\b/g, " ")
+        .trim().split(/\s+/).filter(token => token.length > 2);
     for (const item of parsedItems) {
-        const dedupeKey = String(item.url || (item.title + "|" + item.source)).toLowerCase();
-        if (seenNewsItems.has(dedupeKey)) continue;
-        seenNewsItems.add(dedupeKey);
+        const dedupeKey = String(item.url || "").toLowerCase().replace(/[?#].*$/, "");
+        const tokens = [...new Set(normalizeNewsHeadline(item.title))];
+        const nearDuplicate = tokens.length > 0 && seenHeadlineTokens.some(previous => {
+            const overlap = tokens.filter(token => previous.includes(token)).length;
+            return overlap / Math.max(tokens.length, previous.length) >= 0.82;
+        });
+        if ((dedupeKey && seenNewsItems.has(dedupeKey)) || nearDuplicate) continue;
+        if (dedupeKey) seenNewsItems.add(dedupeKey);
+        if (tokens.length) seenHeadlineTokens.push(tokens);
         uniqueParsedItems.push(item);
     }
     const items = uniqueParsedItems.slice(0, 30).map(({ relevanceScore, isWomensStory, hasSpamSignals, hasHeadlineNoise, hasRelevantAvailabilitySignal, hasTargetTeamAsSubject, ...item }) => item);
@@ -1982,15 +1993,33 @@ app.get("/api/match-intelligence/news", async (req, res) => {
     // Football Genie is the user-facing source; publisher URLs stay server-side.
     return res.json({
         ...result,
-        articles: result.articles.map(article => ({
-            ...article,
-            url: null,
-            sourceLabel: article.officialClubSource
-                ? "Football Genie • Official club source"
-                : "Football Genie • Football publication",
-            sourceLinkHidden: true
-        })),
-        importantNotice: "Football Genie prioritises official club websites and uses reputable football publications as supporting evidence. Publisher priority does not independently confirm current player availability."
+        articles: result.articles.map(article => {
+            let publisherLabel = "Publisher not verified from the available feed link";
+            try {
+                const host = new URL(article.url || "").hostname.toLowerCase().replace(/^www\\./, "");
+                if (host && host !== "news.google.com" && !host.endsWith(".news.google.com") &&
+                    host !== "bing.com" && !host.endsWith(".bing.com")) {
+                    const publisherNames = {
+                        "bbc.co.uk": "BBC Sport", "bbc.com": "BBC Sport",
+                        "skysports.com": "Sky Sports", "theathletic.com": "The Athletic",
+                        "derbyshirelive.co.uk": "Derbyshire Live", "thestar.co.uk": "The Star",
+                        "thestaceywest.com": "The Stacey West", "dcfc.co.uk": "Derby County (official)",
+                        "sufc.co.uk": "Sheffield United (official)"
+                    };
+                    const knownDomain = Object.keys(publisherNames).find(domain => host === domain || host.endsWith("." + domain));
+                    publisherLabel = knownDomain ? publisherNames[knownDomain] : host;
+                }
+            } catch (_) {}
+            return {
+                ...article,
+                url: null,
+                sourceLabel: article.officialClubSource
+                    ? publisherLabel + " • Official club source"
+                    : publisherLabel,
+                sourceLinkHidden: true
+            };
+        }),
+        importantNotice: "Official club announcements are prioritised. Publisher names are shown only when the original publisher domain can be identified; otherwise the publisher is marked unverified. News leads are not confirmation of player availability."
     });
 });
 
