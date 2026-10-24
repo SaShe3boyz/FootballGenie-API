@@ -2511,7 +2511,8 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
                 return players.flatMap(player => {
                     // Headlines also use capitalized medical terms immediately before "doubt"
                     // (e.g. "Back Doubt", "Calf Doubt", "injury doubts"). These are not player names.
-                    if (!player || /^(?:man city|manchester city|aston villa|team news|injury news|injury|injuries|back|calf|hamstring|knee|ankle|muscle|fitness|latest|confirmed|predicted|lineup|line-up|return|doubt|doubts|update|updates|status|test|training|available|unavailable)$/i.test(player) || /^(?:but|and|while|after|before|following|ahead|league|time|the|who|which|that)\b/i.test(player) || /[ \t]+(?:after|before|while|but|and|who|which|that|the)$/i.test(player)) return [];
+                    // Accept only clean capitalized name tokens; fragments containing punctuation, sentence debris, or trailing connectors are not player names.
+                    if (!player || !/^[A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÖØ-öø-ÿ'’\-]*(?:[ \t]+[A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÖØ-öø-ÿ'’\-]*){0,2}$/.test(player) || /^(?:man city|manchester city|aston villa|team news|injury news|injury|injuries|back|calf|hamstring|knee|ankle|muscle|fitness|latest|confirmed|predicted|lineup|line-up|return|doubt|doubts|update|updates|status|test|training|available|unavailable|but|and|while|after|before|following|ahead|league|time|the|who|which|that)$/i.test(player) || /[ \t]+(?:after|before|while|but|and|who|which|that|the)$/i.test(player)) return [];
                     const contextStart = Math.max(0, Number(match.index || 0) - 260);
                     const localContext = availabilityText.slice(contextStart, Number(match.index || 0) + String(match[0] || "").length).toLowerCase();
                     const contextualTeam = [homeTeam, awayTeam].map(name => ({
