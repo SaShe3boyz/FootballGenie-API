@@ -570,8 +570,8 @@ app.get("/api/matches", async (req, res) => {
             resultSet: {
                 ...(combinedData.resultSet || {}),
                 count: all.length,
-                first: all.length ? all.reduce((min, m) => kickoff(m) < min ? kickoff(m) : min, kickoff(all[0])) : startDate,
-                last: all.length ? all.reduce((max, m) => kickoff(m) > max ? kickoff(m) : max, kickoff(all[0])) : lastWindow.to,
+                first: all.length ? new Date(Math.min(...all.map(kickoff))).toISOString().slice(0, 10) : startDate,
+                last: all.length ? new Date(Math.max(...all.map(kickoff))).toISOString().slice(0, 10) : lastWindow.to,
                 played: playedCount
             },
             liveCount: all.filter(match => liveStatuses.has(match.status)).length,
