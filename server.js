@@ -1958,6 +1958,76 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
         // still be useful for general news discovery, but must never support player-availability
         // claims or appear as absentee evidence in Football Genie.
         const rawNewsArticles = Array.isArray(newsData.articles) ? newsData.articles : [];
+        // Hybrid retrieval layer 1: use search feeds as discovery leads, but never treat
+        // aggregator text as official evidence. Layer 2: directly retrieve a competition's
+        // own injury hub when it is a known official source. This gives the system a
+        // second route when club-site search indexing or article-link resolution fails.
+        const officialCompetitionEvidence = [];
+        const officialCompetitionFetchDiagnostics = {
+            attempted: 0, fetched: 0, skippedTeamMismatch: 0, errors: []
+        };
+        const isPremierLeagueFixture = /premier league|epl/i.test(String(req.query.competition || "")) ||
+            /^(?:arsenal|aston villa|bournemouth|brentford|brighton|burnley|chelsea|crystal palace|everton|fulham|leeds united|liverpool|manchester city|man city|manchester united|man united|newcastle united|nottingham forest|sunderland|tottenham|west ham|wolverhampton wanderers|wolves)$/i.test(homeTeam) ||
+            /^(?:arsenal|aston villa|bournemouth|brentford|brighton|burnley|chelsea|crystal palace|everton|fulham|leeds united|liverpool|manchester city|man city|manchester united|man united|newcastle united|nottingham forest|sunderland|tottenham|west ham|wolverhampton wanderers|wolves)$/i.test(awayTeam);
+        if (isPremierLeagueFixture) {
+            officialCompetitionFetchDiagnostics.attempted++;
+            try {
+                const response = await fetch("https://www.premierleague.com/en/latest-player-injuries", {
+                    headers: {
+                        "Accept": "text/html,application/xhtml+xml",
+                        "User-Agent": "Mozilla/5.0 (compatible; FootballGenie/1.0; +https://github.com/SaShe3boyz/FootballGenie-API)"
+                    },
+                    redirect: "follow",
+                    signal: AbortSignal.timeout(6500)
+                });
+                if (!response.ok) {
+                    officialCompetitionFetchDiagnostics.errors.push({ source: "Premier League injury hub", status: response.status });
+                } else {
+                    const finalUrl = new URL(response.url);
+                    if (finalUrl.hostname !== "premierleague.com" && !finalUrl.hostname.endsWith(".premierleague.com")) {
+                        officialCompetitionFetchDiagnostics.errors.push({ source: "Premier League injury hub", error: "redirected_off_official_domain" });
+                    } else {
+                        const html = (await response.text()).slice(0, 2_000_000);
+                        const visibleText = html
+                            .replace(/<(script|style|noscript|svg)\\b[^>]*>[\\s\\S]*?<\\/\\1>/gi, " ")
+                            .replace(/<[^>]+>/g, " ")
+                            .replace(/&nbsp;|&#160;/gi, " ")
+                            .replace(/&amp;/gi, "&").replace(/&quot;/gi, '"')
+                            .replace(/&#39;|&apos;/gi, "'").replace(/&lt;/gi, "<").replace(/&gt;/gi, ">")
+                            .replace(/\\s+/g, " ").trim();
+                        const teamNames = [homeTeam, awayTeam];
+                        const matchedTeams = teamNames.filter(team => visibleText.toLowerCase().includes(team.toLowerCase()));
+                        if (matchedTeams.length) {
+                            officialCompetitionEvidence.push({
+                                title: "Premier League official player injuries hub — " + matchedTeams.join(", "),
+                                source: "Premier League official website",
+                                searchTeam: matchedTeams.length === 1 ? matchedTeams[0] : null,
+                                searchProvider: "direct_official_competition_fetch",
+                                officialClubSource: false,
+                                officialCompetitionSource: true,
+                                sourceTrustTier: "official_competition_website",
+                                publishedAt: null,
+                                snippet: visibleText.slice(0, 12000),
+                                url: response.url,
+                                publisherSourceUrl: "https://www.premierleague.com/en/latest-player-injuries",
+                                categories: ["injury", "official_competition_update"],
+                                availabilityAssessment: "availability_not_established",
+                                fixtureRelevance: "team_background_news",
+                                originalPublisherUrlResolved: true
+                            });
+                            officialCompetitionFetchDiagnostics.fetched++;
+                        } else {
+                            officialCompetitionFetchDiagnostics.skippedTeamMismatch++;
+                        }
+                    }
+                }
+            } catch (error) {
+                officialCompetitionFetchDiagnostics.errors.push({
+                    source: "Premier League injury hub",
+                    error: String(error && (error.cause && error.cause.code || error.name || error.message) || "fetch_failed").slice(0, 100)
+                });
+            }
+        }
         const nonOfficialArticlesIgnored = rawNewsArticles.filter(article =>
             article.officialClubSource !== true && article.sourceTrustTier !== "official_club_website"
         ).length;
@@ -1981,6 +2051,12 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
             availabilityAssessment: article.availabilityAssessment || "availability_not_established",
             fixtureRelevance: article.fixtureRelevance || "team_background_news"
         }));
+        // Competition evidence is accepted only from a verified official competition
+        // hostname, fetched directly over HTTPS; it is never inferred from publisher labels.
+        articles.push(...officialCompetitionEvidence.map((article, index) => ({
+            evidenceId: "C" + (index + 1),
+            ...article
+        })));
 
         // Resolve official-source article URLs before extraction, not only after a headline
         // happens to yield a named-player candidate. This fixes the dead-end where useful
@@ -2626,9 +2702,16 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
         // If a club has not published a relevant update, do not fill the gap with
         // secondary publications or unverified AI inference.
         const isOfficialEvidenceReport = report => {
-            if (report.officialPublisherDomainMatch === true || report.sourceTrustTier === "official_club_website") return true;
+            if (report.officialPublisherDomainMatch === true ||
+                report.sourceTrustTier === "official_club_website" ||
+                report.sourceTrustTier === "official_competition_website") return true;
             const evidence = articles.find(item => item.evidenceId === report.evidenceId);
-            return !!(evidence && (evidence.officialClubSource === true || evidence.sourceTrustTier === "official_club_website"));
+            return !!(evidence && (
+                evidence.officialClubSource === true ||
+                evidence.sourceTrustTier === "official_club_website" ||
+                evidence.officialCompetitionSource === true ||
+                evidence.sourceTrustTier === "official_competition_website"
+            ));
         };
         const normalizedPlayerText = value => normalizeTeamName(String(value || "").replace(/[^A-Za-z0-9'’ -]/g, " "));
         const hasIndependentCorroboration = report => {
@@ -2669,12 +2752,13 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
             providerFeedDiagnostics: newsData.providerFeedDiagnostics || [],
             publisherLinkResolutionDiagnostics: newsData.publisherLinkResolutionDiagnostics || null,
             sourceAgreementDiagnostics: {
-                policy: "official_club_websites_only",
+                policy: "verified_official_club_and_competition_websites_only",
                 nonOfficialArticlesIgnored,
                 nonOfficialReportsSuppressed
             },
             resolverDiagnostics,
             officialPageFetchDiagnostics,
+            officialCompetitionFetchDiagnostics,
             officialDomainSearchDiagnostics,
             officialSiteListingDiagnostics,
             officialSlugResolutionDiagnostics,
