@@ -2319,8 +2319,6 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
         });
     }
 
-    // Legacy pipeline retained but deliberately disabled while BIG BALLS is primary.
-    if (false) {
 });
 
 // Groq is the primary AI provider for Football Genie.
