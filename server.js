@@ -2185,6 +2185,7 @@ async function fetchBigBallsFootballAbsences(homeTeam, awayTeam, competition) {
         throw error;
     }
     const url = new URL("https://api.bigballsdata.com/v1/injuries");
+    url.searchParams.set("sport", "football");
     url.searchParams.set("league", league);
     const response = await fetch(url.href, {
         headers: { "Authorization": "Bearer " + apiKey, "Accept": "application/json" },
@@ -2244,7 +2245,7 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
         return res.status(400).json({ error: "Provide two different teams using homeTeam and awayTeam." });
     }
 
-    const cacheKey = homeTeam.toLowerCase() + "::" + awayTeam.toLowerCase();
+    const cacheKey = homeTeam.toLowerCase() + "::" + awayTeam.toLowerCase() + "::" + String(req.query.competition || "").toLowerCase().trim();
     const forceRefresh = /^(1|true|yes)$/i.test(String(req.query.forceRefresh || ""));
     const cached = absenteeReportCache.get(cacheKey);
     if (!forceRefresh && cached && Date.now() < cached.expiresAt) {
