@@ -1284,6 +1284,156 @@ app.get("/api/match-intelligence/news", async (req, res) => {
             aliases: ["everton", "everton fc", "everton football club", "the toffees"],
             domain: "evertonfc.com/news",
             name: "Official Everton website discovery"
+        },
+        {
+            aliases: ["liverpool","liverpool fc","the reds"],
+            domain: "liverpoolfc.com",
+            name: "Official Liverpool website discovery"
+        },
+        {
+            aliases: ["chelsea","chelsea fc","the blues"],
+            domain: "chelseafc.com",
+            name: "Official Chelsea website discovery"
+        },
+        {
+            aliases: ["manchester united","manchester united fc","man utd","man united","the red devils"],
+            domain: "manutd.com",
+            name: "Official Manchester United website discovery"
+        },
+        {
+            aliases: ["tottenham","tottenham hotspur","tottenham hotspur fc","spurs"],
+            domain: "tottenhamhotspur.com",
+            name: "Official Tottenham Hotspur website discovery"
+        },
+        {
+            aliases: ["newcastle","newcastle united","newcastle united fc"],
+            domain: "newcastleunited.com",
+            name: "Official Newcastle United website discovery"
+        },
+        {
+            aliases: ["real madrid","real madrid cf"],
+            domain: "realmadrid.com",
+            name: "Official Real Madrid website discovery"
+        },
+        {
+            aliases: ["barcelona","fc barcelona","barca","barça"],
+            domain: "fcbarcelona.com",
+            name: "Official FC Barcelona website discovery"
+        },
+        {
+            aliases: ["atletico madrid","atlético madrid","atletico de madrid"],
+            domain: "atleticodemadrid.com",
+            name: "Official Atletico Madrid website discovery"
+        },
+        {
+            aliases: ["bayern munich","bayern münchen","fc bayern","bayern"],
+            domain: "fcbayern.com",
+            name: "Official Bayern Munich website discovery"
+        },
+        {
+            aliases: ["borussia dortmund","dortmund","bvb"],
+            domain: "bvb.de",
+            name: "Official Borussia Dortmund website discovery"
+        },
+        {
+            aliases: ["paris saint-germain","paris saint germain","psg"],
+            domain: "psg.fr",
+            name: "Official Paris Saint-Germain website discovery"
+        },
+        {
+            aliases: ["juventus","juventus fc"],
+            domain: "juventus.com",
+            name: "Official Juventus website discovery"
+        },
+        {
+            aliases: ["inter","inter milan","internazionale","fc internazionale milano"],
+            domain: "inter.it",
+            name: "Official Inter Milan website discovery"
+        },
+        {
+            aliases: ["ac milan","milan"],
+            domain: "acmilan.com",
+            name: "Official AC Milan website discovery"
+        },
+        {
+            aliases: ["napoli","ssc napoli"],
+            domain: "sscnapoli.it",
+            name: "Official Napoli website discovery"
+        },
+        {
+            aliases: ["bayer leverkusen","leverkusen"],
+            domain: "bayer04.de",
+            name: "Official Bayer Leverkusen website discovery"
+        },
+        {
+            aliases: ["eintracht frankfurt","frankfurt"],
+            domain: "eintracht.de",
+            name: "Official Eintracht Frankfurt website discovery"
+        },
+        {
+            aliases: ["athletic club","athletic bilbao","athletic club bilbao"],
+            domain: "athletic-club.eus",
+            name: "Official Athletic Club website discovery"
+        },
+        {
+            aliases: ["real sociedad"],
+            domain: "realsociedad.eus",
+            name: "Official Real Sociedad website discovery"
+        },
+        {
+            aliases: ["sevilla","sevilla fc"],
+            domain: "sevillafc.es",
+            name: "Official Sevilla FC website discovery"
+        },
+        {
+            aliases: ["villarreal","villarreal cf"],
+            domain: "villarrealcf.es",
+            name: "Official Villarreal CF website discovery"
+        },
+        {
+            aliases: ["girona","girona fc"],
+            domain: "gironafc.cat",
+            name: "Official Girona FC website discovery"
+        },
+        {
+            aliases: ["lazio","ss lazio"],
+            domain: "sslazio.it",
+            name: "Official Lazio website discovery"
+        },
+        {
+            aliases: ["roma","as roma"],
+            domain: "asroma.com",
+            name: "Official AS Roma website discovery"
+        },
+        {
+            aliases: ["olympique marseille","marseille"],
+            domain: "om.fr",
+            name: "Official Olympique Marseille website discovery"
+        },
+        {
+            aliases: ["olympique lyonnais","lyon"],
+            domain: "ol.fr",
+            name: "Official Olympique Lyonnais website discovery"
+        },
+        {
+            aliases: ["monaco","as monaco"],
+            domain: "asmonaco.com",
+            name: "Official AS Monaco website discovery"
+        },
+        {
+            aliases: ["benfica","sl benfica"],
+            domain: "slbenfica.pt",
+            name: "Official Benfica website discovery"
+        },
+        {
+            aliases: ["porto","fc porto"],
+            domain: "fcporto.pt",
+            name: "Official Porto website discovery"
+        },
+        {
+            aliases: ["sporting cp","sporting lisbon","sporting clube de portugal"],
+            domain: "sporting.pt",
+            name: "Official Sporting CP website discovery"
         }
     ];
     // Generic official-source discovery is deliberately separate from the small
@@ -2450,7 +2600,7 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
         // Fetch the original official club page when the resolved URL is on a supported club domain.
         // Page text enriches evidence; it does not by itself confirm availability for this fixture.
         const officialPageFetchDiagnostics = { attempted: 0, fetched: 0, nonOfficialSkipped: 0, errors: 0 };
-        const officialArticleHosts = ["arsenal.com", "evertonfc.com", "mancity.com", "avfc.co.uk", "rbleipzig.com", "borussia.com"];
+        const officialArticleHosts = ["arsenal.com", "evertonfc.com", "mancity.com", "avfc.co.uk", "rbleipzig.com", "borussia.com", "liverpoolfc.com", "chelseafc.com", "manutd.com", "tottenhamhotspur.com", "newcastleunited.com", "realmadrid.com", "fcbarcelona.com", "atleticodemadrid.com", "fcbayern.com", "bvb.de", "psg.fr", "juventus.com", "inter.it", "acmilan.com", "sscnapoli.it", "bayer04.de", "eintracht.de", "athletic-club.eus", "realsociedad.eus", "sevillafc.es", "villarrealcf.es", "gironafc.cat", "sslazio.it", "asroma.com", "om.fr", "ol.fr", "asmonaco.com", "slbenfica.pt", "fcporto.pt", "sporting.pt"];
         const officialPageCandidates = articles.filter(article => {
             if (!article.officialClubSource || !article.url) return false;
             try {
