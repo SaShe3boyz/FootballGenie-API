@@ -1984,7 +1984,8 @@ app.get("/api/match-intelligence/news", async (req, res) => {
                 : reputableFallbackSource ? "reputable_secondary_publication" : "unverified_publication"
         };
     });
-    parsedItems.sort((a, b) => Number(b.officialClubSource) - Number(a.officialClubSource) ||
+    // Do not rank by source trust tier; relevant recent articles from all publishers are eligible.
+    parsedItems.sort((a, b) =>
         b.relevanceScore - a.relevanceScore ||
         ((a.ageDays === null ? 9999 : a.ageDays) - (b.ageDays === null ? 9999 : b.ageDays)));
     // Combine the two club-specific searches but remove duplicate headlines.
