@@ -2460,6 +2460,15 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
         let extractionStatus = "evidence_only";
         let aiModel = null;
         let aiProvider = null;
+        const aiExtractionDiagnostics = {
+            attempted: false,
+            groqConfigured: Boolean(process.env.GROQ_API_KEY),
+            openaiConfigured: Boolean(process.env.OPENAI_API_KEY),
+            status: (process.env.GROQ_API_KEY || process.env.OPENAI_API_KEY)
+                ? "waiting_for_extraction" : "no_provider_configured",
+            errorType: null,
+            errorMessage: null
+        };
 
         // Deterministic fallback: find literal player names next to availability wording
         // anywhere in a headline (not only at character zero). Many publishers prepend
@@ -2665,6 +2674,7 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
         }));
         if (candidateReports.length) extractionStatus = "literal_headline_candidates";
         if (articles.length && (process.env.GROQ_API_KEY || process.env.OPENAI_API_KEY)) {
+            aiExtractionDiagnostics.attempted = true;
             const systemInstruction = "You extract possible player-absence reports from supplied football publication evidence. Return only valid JSON with a top-level reports array. Each report must contain playerNameAsWritten, team, reportedStatus, reasonAsWritten, and evidenceId. reportedStatus must be one of reported_unavailable, doubtful_or_test_pending, or availability_not_established. Never invent players, expand a surname into a full name, infer an injury, or use outside knowledge. playerNameAsWritten must be a literal player name or surname appearing in that article title/snippet. Only report a player if the evidence text names them. Do not treat a generic team injury headline as proof that every named player is absent. Team must be exactly one of the two supplied teams. If no player is named, return an empty reports array.";
             const userContent = "Fixture: " + homeTeam + " vs " + awayTeam +
                 "\nTeams allowed: " + JSON.stringify([homeTeam, awayTeam]) +
@@ -2673,6 +2683,7 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
                 const aiResult = await requestAbsenteeAIAnswer(systemInstruction, userContent);
                 aiModel = aiResult.model;
                 aiProvider = aiResult.provider;
+                aiExtractionDiagnostics.status = "provider_response_received";
                 const answerText = aiResult.answer.trim();
                 const firstBrace = answerText.indexOf("{");
                 const lastBrace = answerText.lastIndexOf("}");
@@ -2734,10 +2745,21 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
                 } else {
                     extractionStatus = "literal_fallback_no_ai_candidates";
                 }
+                aiExtractionDiagnostics.status = aiProvider
+                    ? "completed" : "completed_without_provider_identity";
             } catch (error) {
-                // Do not fail the whole absentee endpoint if AI is rate-limited; return publication evidence only.
-                console.warn("Absentee extraction fell back to evidence-only mode:", String(error.message || error).slice(0, 180));
+                // Keep the endpoint available, but expose a safe diagnostic without credentials.
+                const message = String(error && error.message || "unknown error");
+                aiExtractionDiagnostics.status = "provider_or_parse_error";
+                aiExtractionDiagnostics.errorType = error && error.name ? String(error.name).slice(0, 60) : "Error";
+                aiExtractionDiagnostics.errorMessage = message
+                    .replace(/(?:Bearer\s+)[A-Za-z0-9._-]+/gi, "Bearer [redacted]")
+                    .replace(/(?:key|token|authorization)\s*[:=]\s*\S+/gi, "$1=[redacted]")
+                    .slice(0, 180);
+                console.warn("Absentee extraction fell back to deterministic evidence:", message.slice(0, 180));
             }
+        } else if (!articles.length) {
+            aiExtractionDiagnostics.status = "skipped_no_articles";
         }
 
         // Official club websites are the only accepted evidence for absentee reports.
@@ -2808,6 +2830,7 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
             extractionStatus,
             aiModel,
             aiProvider,
+            aiExtractionDiagnostics,
             reports: candidateReports,
             evidence: articles,
             importantNotice: "These are publication-based candidate reports, not official team-sheet confirmation. Player names are returned only when literally present in the supplied article title/snippet. A report marked unavailable or doubtful must be checked against the original article, exact match date, and official club/league update. No prediction probabilities are changed by this endpoint."
