@@ -2294,13 +2294,35 @@ const BIGBALLS_TEAM_LEAGUES = [
 ];
 function inferBigBallsLeague(homeTeam, awayTeam, competition) {
     const supplied = String(competition || "").toLowerCase().trim();
-    if (BIGBALLS_FOOTBALL_LEAGUES[supplied]) return BIGBALLS_FOOTBALL_LEAGUES[supplied];
     const compact = supplied.replace(/[^a-z0-9]/g, "");
+    if (BIGBALLS_FOOTBALL_LEAGUES[supplied]) return BIGBALLS_FOOTBALL_LEAGUES[supplied];
     if (BIGBALLS_FOOTBALL_LEAGUES[compact]) return BIGBALLS_FOOTBALL_LEAGUES[compact];
+
+    // Fixture APIs often include season labels or prefixes such as "League:
+    // Premier League 2026/27". Match the actual competition name in that text.
+    const competitionAliases = [
+        { league: "epl", keys: ["premierleague", "englishpremierleague", "epl"] },
+        { league: "laliga", keys: ["laliga", "spanishprimera", "primera division"] },
+        { league: "seriea", keys: ["seriea", "italianseriea"] },
+        { league: "bundesliga", keys: ["bundesliga", "germanbundesliga"] },
+        { league: "ligue1", keys: ["ligue1", "frenchligue1"] },
+        { league: "ucl", keys: ["uefachampionsleague", "championsleague", "ucl"] },
+        { league: "mls", keys: ["majorleaguesoccer", "mls"] }
+    ];
+    for (const alias of competitionAliases) {
+        if (alias.keys.some(key => compact.includes(key.replace(/[^a-z0-9]/g, "")))) return alias.league;
+    }
+
+    // Last resort: identify the league from known club names only when the
+    // supplied competition is blank or not recognised.
     for (const group of BIGBALLS_TEAM_LEAGUES) {
-        if ([homeTeam, awayTeam].some(team => group.teams.some(name =>
-            normalizeTeamName(team).includes(normalizeTeamName(name)) ||
-            normalizeTeamName(name).includes(normalizeTeamName(team))))) return group.league;
+        if ([homeTeam, awayTeam].some(team => group.teams.some(name => {
+            const normalizedTeam = normalizeTeamName(team);
+            const normalizedKnown = normalizeTeamName(name);
+            return normalizedTeam === normalizedKnown ||
+                normalizedTeam.includes(normalizedKnown) ||
+                normalizedKnown.includes(normalizedTeam);
+        }))) return group.league;
     }
     return null;
 }
