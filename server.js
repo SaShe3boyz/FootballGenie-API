@@ -2534,6 +2534,13 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
                     const team = teamFromSubject || (contextualTeam && contextualTeam.name) || (evidence.searchTeam &&
                         [homeTeam, awayTeam].find(name => normalizeTeamName(name) === normalizeTeamName(evidence.searchTeam)));
                     if (!team) return [];
+                    // An official club's own article may discuss the opponent in a preview.
+                    // Never attribute those opponent-section names to the article's publishing club.
+                    // For club-source evidence, only accept players assigned to the club whose
+                    // official page/search context supplied the evidence. Opponent availability
+                    // must be confirmed by that opponent's own official source instead.
+                    if (evidence.officialClubSource === true && evidence.searchTeam &&
+                        normalizeTeamName(team) !== normalizeTeamName(evidence.searchTeam)) return [];
                     const freshness = assessAbsenteePublicationFreshness(evidence.publishedAt);
                     return [{
                         player, team, reportedStatus,
