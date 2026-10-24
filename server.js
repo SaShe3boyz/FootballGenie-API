@@ -1793,7 +1793,7 @@ app.get("/api/match-intelligence/news", async (req, res) => {
             searchProvider: searchProvider || null,
             publishedAt: validDate ? validDate.toISOString() : null,
             ageDays: ageMs === null ? null : Math.floor(ageMs / (24 * 60 * 60 * 1000)),
-            freshness: ageMs === null ? "date_unknown" : ageMs < 0 ? "future_date_check" : ageMs <= 7 * 24 * 60 * 60 * 1000 ? "fresh_7d" : ageMs <= maxAgeMs ? "recent_30d" : "stale",
+            freshness: ageMs === null ? "date_unknown" : ageMs < 0 ? "future_date_check" : ageMs <= maxAgeMs ? "fresh_7d" : "stale",
             snippet: description,
             url: /^https?:\/\//i.test(link) ? link : null,
             publisherSourceUrl: /^https?:\/\//i.test(publisherSourceUrl || "") ? publisherSourceUrl : null,
@@ -1996,9 +1996,9 @@ app.get("/api/match-intelligence/news", async (req, res) => {
             googleNewsLinksMatchedToBingPublisher: bingPublisherLinksMatched
         },
         count: items.length,
-        articles: items.map(article => ({ ...article, fullInformation: article.snippet || article.title, brandSignature: "FOOTBALLGENIE" })),
+        articles: items.map(article => ({ ...article, fullInformation: [article.title, article.snippet].filter(Boolean).join("\n\n"), brandSignature: "FOOTBALLGENIE", informationOnly: true })),
         brandSignature: "FOOTBALLGENIE",
-        importantNotice: "News items are search leads, not verified player-availability records. Headlines that clearly name a different opponent are excluded to reduce cross-fixture contamination. Articles with missing or future publication dates are excluded. Open the original source and verify the exact fixture, player, team, and availability before changing a prediction. 'Confirmed' is a wording signal, not independent verification. No results does not mean there are no injuries."
+        importantNotice: "FOOTBALLGENIE INFORMATION FEATURE: articles and summaries are provided for user information only. News does not change match probabilities; Result Validation is the accuracy-tuning process. Items may be media reports and are not independently verified official player-availability records. Articles older than 7 days, with missing dates, or future dates are excluded. No results does not mean there are no injuries."
     };
     footballNewsCache.set(cacheKey, {
         expiresAt: fetchedAtMs + FOOTBALL_NEWS_CACHE_TTL_MS,
@@ -2044,7 +2044,7 @@ app.get("/api/match-intelligence/news", async (req, res) => {
                 sourceLinkHidden: true
             };
         }),
-        importantNotice: "Official club announcements are prioritised. Publisher names are shown only when the original publisher domain can be identified; otherwise the publisher is marked unverified. News leads are not confirmation of player availability."
+        importantNotice: "FOOTBALLGENIE signs off this information feature. News is informational only and does not affect match probabilities; Result Validation is used to tune prediction accuracy. Article text may be a report rather than an independently verified official statement."
     });
 });
 
