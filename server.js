@@ -454,26 +454,28 @@ res.status(502).json({
 }
 });
 
-// Short-lived cache keeps repeated fixture loads fast and reduces provider calls.
+// Short-lived cache keeps repeated fixture loads fast while allowing live statuses to update frequently.
 const matchesCache = new Map();
-const MATCH_CACHE_TTL_MS = 3 * 60 * 1000;
+const MATCH_CACHE_TTL_MS = 90 * 1000;
 
 app.get("/api/matches", async (req, res) => {
     if (!API_TOKEN) {
-        return res.status(500).json({
-            error: "Football data API token is not configured."
-        });
+        return res.status(500).json({ error: "Football data API token is not configured." });
     }
 
     const { dateFrom, dateTo } = req.query;
+    const forceRefresh = ["1", "true", "yes"].includes(String(req.query.refresh || "").toLowerCase());
     if (
-        (dateFrom && !/^\d{4}-\d{2}-\d{2}$/.test(dateFrom)) ||
-        (dateTo && !/^\d{4}-\d{2}-\d{2}$/.test(dateTo))
+        (dateFrom && !/^\\d{4}-\\d{2}-\\d{2}$/.test(dateFrom)) ||
+        (dateTo && !/^\\d{4}-\\d{2}-\\d{2}$/.test(dateTo))
     ) {
         return res.status(400).json({ error: "Dates must use YYYY-MM-DD format." });
     }
 
-    const defaultStart = new Date();
+    // Keep recent completed games available for result syncing, but cover today and the next
+    // 20 days so the list remains useful throughout the current matchday and upcoming rounds.
+    const now = new Date();
+    const defaultStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
     defaultStart.setUTCDate(defaultStart.getUTCDate() - 3);
     const startDate = dateFrom || defaultStart.toISOString().slice(0, 10);
     const firstEndDate = new Date(startDate + "T00:00:00Z");
@@ -496,23 +498,20 @@ app.get("/api/matches", async (req, res) => {
 
     const cacheKey = windows.map(w => w.from + ":" + w.to).join("|");
     const cached = matchesCache.get(cacheKey);
-    if (cached && Date.now() < cached.expiresAt) {
+    if (!forceRefresh && cached && Date.now() < cached.expiresAt) {
         res.set("X-Football-Genie-Cache", "HIT");
+        res.set("X-Football-Genie-Data-Age-Seconds", String(Math.floor((Date.now() - cached.fetchedAt) / 1000)));
         return res.json(cached.data);
     }
 
     try {
-        // Fetch both date windows concurrently instead of waiting for one before starting the other.
         const windowResults = await Promise.all(windows.map(async window => {
-            const params = new URLSearchParams({
-                dateFrom: window.from,
-                dateTo: window.to
-            });
+            const params = new URLSearchParams({ dateFrom: window.from, dateTo: window.to });
             const response = await fetch(
                 "https://api.football-data.org/v4/matches?" + params.toString(),
                 {
                     headers: { "X-Auth-Token": API_TOKEN },
-                    signal: AbortSignal.timeout(10000)
+                    signal: AbortSignal.timeout(15000)
                 }
             );
             const responseText = await response.text();
@@ -531,7 +530,7 @@ app.get("/api/matches", async (req, res) => {
         }));
 
         const allMatches = new Map();
-        let combinedData = windowResults[0] || {};
+        const combinedData = windowResults[0] || {};
         let playedCount = 0;
         for (const data of windowResults) {
             for (const match of (Array.isArray(data.matches) ? data.matches : [])) {
@@ -540,13 +539,27 @@ app.get("/api/matches", async (req, res) => {
             playedCount += Number(data.resultSet && data.resultSet.played || 0);
         }
 
-        const matches = Array.from(allMatches.values()).sort(
-            (a, b) => new Date(a.utcDate) - new Date(b.utcDate)
-        );
-        const lastWindow = windows[windows.length - 1];
-        const firstDate = matches.length ? matches[0].utcDate.slice(0, 10) : startDate;
-        const lastDate = matches.length ? matches[matches.length - 1].utcDate.slice(0, 10) : lastWindow.to;
+        const all = Array.from(allMatches.values());
+        const liveStatuses = new Set(["IN_PLAY", "PAUSED", "EXTRA_TIME", "PENALTY_SHOOTOUT"]);
+        const finishedStatuses = new Set(["FINISHED", "AWARDED"]);
+        const nowMs = Date.now();
+        const kickoff = match => Date.parse(match.utcDate || "") || 0;
+        // Put live games first, then future fixtures by kickoff, then recent completed games
+        // newest-first. This prevents three days of finished matches hiding today's live games.
+        all.sort((a, b) => {
+            const aLive = liveStatuses.has(a.status);
+            const bLive = liveStatuses.has(b.status);
+            if (aLive !== bLive) return aLive ? -1 : 1;
 
+            const aFuture = !finishedStatuses.has(a.status) && kickoff(a) >= nowMs;
+            const bFuture = !finishedStatuses.has(b.status) && kickoff(b) >= nowMs;
+            if (aFuture !== bFuture) return aFuture ? -1 : 1;
+            if (aFuture && bFuture) return kickoff(a) - kickoff(b);
+            if (finishedStatuses.has(a.status) && finishedStatuses.has(b.status)) return kickoff(b) - kickoff(a);
+            return kickoff(a) - kickoff(b);
+        });
+
+        const lastWindow = windows[windows.length - 1];
         const result = {
             ...combinedData,
             filters: {
@@ -556,32 +569,31 @@ app.get("/api/matches", async (req, res) => {
             },
             resultSet: {
                 ...(combinedData.resultSet || {}),
-                count: matches.length,
-                first: firstDate,
-                last: lastDate,
+                count: all.length,
+                first: all.length ? all.reduce((min, m) => kickoff(m) < min ? kickoff(m) : min, kickoff(all[0])) : startDate,
+                last: all.length ? all.reduce((max, m) => kickoff(m) > max ? kickoff(m) : max, kickoff(all[0])) : lastWindow.to,
                 played: playedCount
             },
-            matches
+            liveCount: all.filter(match => liveStatuses.has(match.status)).length,
+            matches: all
         };
 
-        matchesCache.set(cacheKey, { data: result, expiresAt: Date.now() + MATCH_CACHE_TTL_MS });
-        // Keep the cache small and discard expired entries.
+        const fetchedAt = Date.now();
+        matchesCache.set(cacheKey, { data: result, fetchedAt, expiresAt: fetchedAt + MATCH_CACHE_TTL_MS });
         for (const [key, value] of matchesCache.entries()) {
             if (Date.now() >= value.expiresAt || matchesCache.size > 20) matchesCache.delete(key);
         }
         res.set("X-Football-Genie-Cache", "MISS");
+        res.set("X-Football-Genie-Data-Age-Seconds", "0");
         return res.json(result);
     } catch (error) {
         console.error("Football matches error:", error.message);
-        // If the provider is temporarily slow, use recently cached fixtures rather than leave the app waiting.
-        const stale = matchesCache.get(cacheKey);
-        if (stale && Date.now() - (stale.expiresAt - MATCH_CACHE_TTL_MS) < 24 * 60 * 60 * 1000) {
-            res.set("X-Football-Genie-Cache", "STALE");
-            return res.json(stale.data);
-        }
+        // Do not disguise old fixtures as live data when the provider is unavailable.
         return res.status(error.status || 502).json({
-            error: "Unable to retrieve football matches.",
-            details: error.message || "Unknown server error."
+            status: "fixtures_provider_unavailable",
+            error: "Unable to retrieve fresh football matches.",
+            details: error.message || "Unknown server error.",
+            staleFixturesServed: false
         });
     }
 });
