@@ -1828,7 +1828,7 @@ app.get("/api/match-intelligence/news", async (req, res) => {
     const isDirectOfficialClubUrlForDiscovery = value => {
         try {
             const host = new URL(value || "").hostname.toLowerCase();
-            return ["arsenal.com", "evertonfc.com", "mancity.com", "avfc.co.uk", "rbleipzig.com", "borussia.com"]
+            return ["arsenal.com", "evertonfc.com", "mancity.com", "avfc.co.uk", "rbleipzig.com", "borussia.com", "liverpoolfc.com", "chelseafc.com", "manutd.com", "tottenhamhotspur.com", "newcastleunited.com", "realmadrid.com", "fcbarcelona.com", "atleticodemadrid.com", "fcbayern.com", "bvb.de", "psg.fr", "juventus.com", "inter.it", "acmilan.com", "sscnapoli.it", "bayer04.de", "eintracht.de", "athletic-club.eus", "realsociedad.eus", "sevillafc.es", "villarrealcf.es", "gironafc.cat", "sslazio.it", "asroma.com", "om.fr", "ol.fr", "asmonaco.com", "slbenfica.pt", "fcporto.pt", "sporting.pt"]
                 .some(domain => host === domain || host.endsWith("." + domain));
         } catch (_) { return false; }
     };
@@ -2432,7 +2432,7 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
             if (!article.officialClubSource || !article.url || !/news\.google\.com/i.test(article.url)) return false;
             try {
                 const host = new URL(article.publisherSourceUrl || "").hostname.toLowerCase();
-                return ["arsenal.com", "evertonfc.com", "mancity.com", "avfc.co.uk", "rbleipzig.com", "borussia.com"]
+                return ["arsenal.com", "evertonfc.com", "mancity.com", "avfc.co.uk", "rbleipzig.com", "borussia.com", "liverpoolfc.com", "chelseafc.com", "manutd.com", "tottenhamhotspur.com", "newcastleunited.com", "realmadrid.com", "fcbarcelona.com", "atleticodemadrid.com", "fcbayern.com", "bvb.de", "psg.fr", "juventus.com", "inter.it", "acmilan.com", "sscnapoli.it", "bayer04.de", "eintracht.de", "athletic-club.eus", "realsociedad.eus", "sevillafc.es", "villarrealcf.es", "gironafc.cat", "sslazio.it", "asroma.com", "om.fr", "ol.fr", "asmonaco.com", "slbenfica.pt", "fcporto.pt", "sporting.pt"]
                     .some(domain => host === domain || host.endsWith("." + domain));
             } catch (_) { return false; }
         }).slice(0, 8);
@@ -2485,7 +2485,7 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
             if (!article.officialClubSource || !article.url || !/news\.google\.com/i.test(article.url)) return false;
             try {
                 const host = new URL(article.publisherSourceUrl || "").hostname.toLowerCase();
-                return ["arsenal.com", "evertonfc.com", "mancity.com", "avfc.co.uk", "rbleipzig.com", "borussia.com"]
+                return ["arsenal.com", "evertonfc.com", "mancity.com", "avfc.co.uk", "rbleipzig.com", "borussia.com", "liverpoolfc.com", "chelseafc.com", "manutd.com", "tottenhamhotspur.com", "newcastleunited.com", "realmadrid.com", "fcbarcelona.com", "atleticodemadrid.com", "fcbayern.com", "bvb.de", "psg.fr", "juventus.com", "inter.it", "acmilan.com", "sscnapoli.it", "bayer04.de", "eintracht.de", "athletic-club.eus", "realsociedad.eus", "sevillafc.es", "villarrealcf.es", "gironafc.cat", "sslazio.it", "asroma.com", "om.fr", "ol.fr", "asmonaco.com", "slbenfica.pt", "fcporto.pt", "sporting.pt"]
                     .some(domain => host === domain || host.endsWith("." + domain));
             } catch (_) { return false; }
         }).slice(0, 8);
