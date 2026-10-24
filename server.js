@@ -2493,6 +2493,7 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
             providerStale: typeof bigBalls.meta.stale === "boolean" ? bigBalls.meta.stale : null,
             providerRecordCount: reports.length,
             providerTotalLeagueRecords: bigBalls.totalProviderRows,
+            providerDiagnostics: bigBalls.diagnostics || null,
             reports,
             evidence: reports.map((report, index) => ({
                 evidenceId: "BB" + (index + 1),
