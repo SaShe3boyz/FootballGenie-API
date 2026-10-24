@@ -2338,53 +2338,99 @@ async function fetchBigBallsFootballAbsences(homeTeam, awayTeam, competition) {
         error.code = "bigballs_league_unknown";
         throw error;
     }
-    const url = new URL("https://api.bigballsdata.com/v1/injuries");
-    // BIG BALLS league-specific injury pages document league-only requests.
-    url.searchParams.set("league", league);
-    const response = await fetch(url.href, {
-        headers: { "Authorization": "Bearer " + apiKey, "Accept": "application/json" },
-        signal: AbortSignal.timeout(12000)
-    });
-    const textBody = await response.text();
-    let payload;
-    try { payload = JSON.parse(textBody); }
-    catch (_) {
-        const error = new Error("BIG BALLS Data returned an unreadable response.");
-        error.code = "bigballs_invalid_json";
-        error.status = response.status;
-        throw error;
-    }
-    if (!response.ok) {
-        const providerMessage = payload && payload.error && (payload.error.message || payload.error) ||
-            payload && payload.message || "Provider request failed.";
-        const error = new Error("BIG BALLS Data HTTP " + response.status + ": " + String(providerMessage).slice(0, 180));
-        error.status = response.status;
-        error.code = "bigballs_provider_error";
-        throw error;
-    }
-    const rows = extractBigBallsRows(payload);
-    const wantedTeams = [homeTeam, awayTeam];
-    const reports = rows.map((row, index) => {
-        const player = row.player || row.athlete || {};
-        const team = row.team || player.team || row.club || {};
-        const fixture = row.fixture || row.match || row.game || {};
-        const playerName = bigBallsText(row.player_name, row.playerName, row.name, player.name, row.full_name);
-        const teamName = bigBallsText(row.team_name, row.teamName, team.name, row.club_name, row.squad_name);
-        const reason = bigBallsText(row.reason, row.injury, row.injury_type, row.absence_reason, row.description, row.comment);
-        const fixtureDate = bigBallsText(row.fixture_date, row.match_date, row.date, fixture.date, fixture.kickoff_utc, fixture.kickoff);
-        const fixtureName = bigBallsText(row.fixture_name, row.match_name, fixture.name, fixture.label);
-        const status = bigBallsText(row.status, row.availability, row.designation);
-        return { row, index, playerName, teamName, reason, fixtureDate, fixtureName, status, playerId: row.player_id || row.playerId || player.id || null };
-    }).filter(item => {
-        if (!item.playerName || !item.teamName) return false;
-        const normalizedTeam = normalizeTeamName(item.teamName);
-        return wantedTeams.some(team => {
-            const normalizedWanted = normalizeTeamName(team);
-            return normalizedTeam === normalizedWanted || normalizedTeam.includes(normalizedWanted) || normalizedWanted.includes(normalizedTeam);
+
+    // Official BIG BALLS Data OpenAPI defines soccer absence lookups as
+    // /v1/injuries?sport=football&team=<team name>. The old league= query
+    // was not a documented filter and could return no useful rows.
+    async function fetchTeamRows(teamName) {
+        const url = new URL("https://api.bigballsdata.com/v1/injuries");
+        url.searchParams.set("sport", "football");
+        url.searchParams.set("team", teamName);
+        const response = await fetch(url.href, {
+            headers: { "Authorization": "Bearer " + apiKey, "Accept": "application/json" },
+            signal: AbortSignal.timeout(12000)
         });
-    });
-    const meta = payload.meta || payload.metadata || {};
-    return { league, rows: reports, meta, fetchedAt: new Date().toISOString(), totalProviderRows: rows.length };
+        const textBody = await response.text();
+        let payload;
+        try { payload = JSON.parse(textBody); }
+        catch (_) {
+            const error = new Error("BIG BALLS Data returned an unreadable response.");
+            error.code = "bigballs_invalid_json";
+            error.status = response.status;
+            throw error;
+        }
+        if (!response.ok) {
+            const providerMessage = payload && payload.error &&
+                (payload.error.message || payload.error) || payload && payload.message || "Provider request failed.";
+            const error = new Error("BIG BALLS Data HTTP " + response.status + ": " + String(providerMessage).slice(0, 180));
+            error.status = response.status;
+            error.code = "bigballs_provider_error";
+            throw error;
+        }
+        if (payload && payload.error) {
+            const message = typeof payload.error === "string" ? payload.error :
+                payload.error.message || "Provider returned an error.";
+            const error = new Error("BIG BALLS Data: " + String(message).slice(0, 180));
+            error.code = "bigballs_provider_error";
+            error.status = response.status;
+            throw error;
+        }
+        return { payload, rows: extractBigBallsRows(payload), requestedTeam: teamName };
+    }
+
+    // Query both selected clubs directly so the app gets every provider row for
+    // either side, not just records mentioning both clubs or a guessed league.
+    const teamResults = await Promise.all([
+        fetchTeamRows(homeTeam),
+        fetchTeamRows(awayTeam)
+    ]);
+    const rows = [];
+    const seen = new Set();
+    for (const result of teamResults) {
+        for (const row of result.rows) {
+            const player = row.player || row.athlete || {};
+            const team = row.team || player.team || row.club || {};
+            const teamName = bigBallsText(row.team_name, row.teamName,
+                typeof team === "string" ? team : team.name,
+                row.club_name, row.squad_name) || result.requestedTeam;
+            const playerName = bigBallsText(row.player_name, row.playerName, row.name, player.name, row.full_name);
+            const reason = bigBallsText(row.reason, row.injury, row.injury_type, row.absence_reason, row.description, row.comment);
+            const fixture = row.fixture || row.match || row.game || {};
+            const fixtureDate = bigBallsText(row.fixture_date, row.match_date, row.date, fixture.date, fixture.kickoff_utc, fixture.kickoff);
+            const fixtureName = bigBallsText(row.fixture_name, row.match_name, fixture.name, fixture.label);
+            const status = bigBallsText(row.status, row.availability, row.designation);
+            // Preserve all provider records, including rows whose schema omits a
+            // player name; the team-scoped query itself ties the row to that club.
+            const identity = [
+                normalizeTeamName(teamName), normalizeTeamName(playerName),
+                normalizeTeamName(reason), String(row.updated_at || row.updatedAt || fixtureDate || ""),
+                String(row.status || status || "")
+            ].join("|");
+            if (seen.has(identity)) continue;
+            seen.add(identity);
+            rows.push({
+                row, playerName, teamName, reason, fixtureDate, fixtureName, status,
+                playerId: row.player_id || row.playerId || player.id || null
+            });
+        }
+    }
+    const metaList = teamResults.map(result => result.payload.meta || result.payload.metadata || {});
+    const asOfValues = metaList.map(meta => meta.as_of || meta.asOf || meta.updated_at || null).filter(Boolean);
+    const meta = {
+        as_of: asOfValues.sort()[0] || null,
+        stale: metaList.some(item => item.stale === true),
+        teamQueries: teamResults.map(result => ({
+            team: result.requestedTeam,
+            returned: result.rows.length
+        }))
+    };
+    return {
+        league,
+        rows,
+        meta,
+        fetchedAt: new Date().toISOString(),
+        totalProviderRows: teamResults.reduce((sum, result) => sum + result.rows.length, 0)
+    };
 }
 
 // Structured absentee-report endpoint. Publication headlines are leads, not official confirmation.
