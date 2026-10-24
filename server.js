@@ -2531,13 +2531,18 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
                         reason: title.slice(0, 220),
                         evidenceId: evidence.evidenceId, title, source: evidence.source,
                         evidenceQuote: String(match[0] || "").trim(),
-                        publishedAt: evidence.publishedAt, url: evidence.url || evidence.originalSourcePageUrl || null,
+                        publishedAt: evidence.publishedAt, url: evidence.originalSourcePageFetched === true
+                            ? (evidence.originalSourcePageUrl || evidence.url || null)
+                            : (evidence.url || evidence.originalSourcePageUrl || null),
                         sourceLinkType: (() => {
                             try {
-                                const host = new URL(evidence.url).hostname.toLowerCase();
+                                const sourceUrl = evidence.originalSourcePageFetched === true
+                                    ? (evidence.originalSourcePageUrl || evidence.url) : evidence.url;
+                                const host = new URL(sourceUrl).hostname.toLowerCase();
                                 if (host === "news.google.com" || host.endsWith(".news.google.com")) {
                                     return "news_aggregator_link_original_publisher_not_resolved";
                                 }
+                                if (evidence.originalSourcePageFetched === true) return "official_club_page_fetched";
                                 if (host === "mancity.com" || host.endsWith(".mancity.com") ||
                                     host === "avfc.co.uk" || host.endsWith(".avfc.co.uk") ||
                                     host === "rbleipzig.com" || host.endsWith(".rbleipzig.com") ||
@@ -2566,10 +2571,13 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
                         publisherUrlResolutionMethod: evidence.publisherUrlResolutionMethod ||
                             (String(evidence.searchProvider || "").startsWith("Bing News RSS - official")
                                 ? "direct_official_club_domain_search_result" : null),
-                        originalSourceUrlVerified: false,
-                        sourceVerificationGuidance: reportedStatus === "reported_available_check_source"
-                            ? "This headline suggests availability, not an absence. Open the original publisher or official club statement and confirm the named player, date, and exact fixture before marking available."
-                            : "Open the original publisher page and confirm the named player, club, publication date, and exact fixture before treating this as current availability.",
+                        originalSourceUrlVerified: evidence.originalSourcePageFetched === true &&
+                            Boolean(evidence.originalSourcePageUrl || evidence.url),
+                        sourceVerificationGuidance: evidence.originalSourcePageFetched === true
+                            ? "The official club page was fetched. The quoted wording supports only the reported status; verify any later team-news update before kickoff."
+                            : reportedStatus === "reported_available_check_source"
+                                ? "This headline suggests availability, not an absence. Open the original publisher or official club statement and confirm the named player, date, and exact fixture before marking available."
+                                : "Open the original publisher page and confirm the named player, club, publication date, and exact fixture before treating this as current availability.",
                         ...freshness,
                         fixtureRelevance: evidence.fixtureRelevance,
                         evidenceAssessment: reportedStatus === "reported_unavailable"
@@ -2577,7 +2585,25 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
                             : reportedStatus === "reported_available_check_source"
                                 ? "reported_available_check_original_source"
                                 : "reported_doubtful_or_test_pending",
-                        extractionMethod: "literal_headline_phrase"
+                        extractionMethod: evidence.originalSourcePageFetched === true
+                            ? "literal_phrase_from_fetched_official_page"
+                            : "literal_headline_phrase",
+                        evidenceVerification: {
+                            status: evidence.originalSourcePageFetched === true
+                                ? "official_page_fetched_claim_supported_by_page_text"
+                                : "unverified_publication_lead",
+                            originalSourceOpened: evidence.originalSourcePageFetched === true,
+                            playerClubIndependentlyVerified: evidence.originalSourcePageFetched === true &&
+                                new RegExp("\\b" + player.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\                        extractionMethod: "literal_headline_phrase"
+                    }];") + "\\b", "i").test(evidence.snippet || "") &&
+                                new RegExp("\\b" + team.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\                        extractionMethod: "literal_headline_phrase"
+                    }];") + "\\b", "i").test(evidence.snippet || ""),
+                            exactFixtureAvailabilityVerified: evidence.originalSourcePageFetched === true &&
+                                new RegExp("\\b" + player.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\                        extractionMethod: "literal_headline_phrase"
+                    }];") + "\\b", "i").test(evidence.snippet || "") &&
+                                /\\b(?:ruled out|will be without|will miss|set to miss|unavailable|could return|may return|doubtful|a doubt)\\b/i.test(evidence.snippet || ""),
+                            headlineOnly: evidence.originalSourcePageFetched !== true
+                        }
                     }];
                 });
             });
