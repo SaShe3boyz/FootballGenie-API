@@ -2361,11 +2361,12 @@ async function fetchBigBallsFootballAbsences(homeTeam, awayTeam, competition) {
         throw error;
     }
 
-    // Use the documented soccer-wide injuries route, then filter the returned
-    // records against both selected team names locally. This avoids depending
-    // on provider-side team-name filtering, which can vary by canonical alias.
+    // BIG BALLS soccer absence data is league-scoped. Its official league
+    // examples use /v1/injuries?league=<slug>; requesting only sport=football
+    // can return an empty dataset. Fetch the selected league explicitly, then
+    // filter by the two selected team names locally to handle canonical aliases.
     const url = new URL("https://api.bigballsdata.com/v1/injuries");
-    url.searchParams.set("sport", "football");
+    url.searchParams.set("league", league);
     const response = await fetch(url.href, {
         headers: { "Authorization": "Bearer " + apiKey, "Accept": "application/json" },
         signal: AbortSignal.timeout(12000)
