@@ -2798,16 +2798,30 @@ app.get("/api/match-intelligence/absentees", async (req, res) => {
                 // Never return raw provider errors to the public endpoint: they may include
                 // organization identifiers, account metadata, or other provider response details.
                 const lowerMessage = message.toLowerCase();
-                const safeErrorCode = /\\b429\\b|rate limit|tokens per day|too many requests/.test(lowerMessage)
+                const providerHttpStatus = Number(error && error.status) ||
+                    Number((lowerMessage.match(/\\bhttp (\\d{3})\\b/) || [])[1]) || null;
+                const safeErrorCode = providerHttpStatus === 429 ||
+                        /\\b429\\b|rate limit|tokens per day|too many requests/.test(lowerMessage)
                     ? "provider_rate_limited"
-                    : /timeout|timed out|aborterror/.test(lowerMessage)
-                        ? "provider_timeout"
-                        : /no ai provider is configured/.test(lowerMessage)
-                            ? "no_provider_configured"
-                            : /json|parse|response did not contain/.test(lowerMessage)
-                                ? "provider_response_parse_error"
-                                : "provider_request_failed";
+                    : providerHttpStatus === 401
+                        ? "provider_authentication_failed"
+                        : providerHttpStatus === 403
+                            ? "provider_access_denied"
+                            : providerHttpStatus === 404
+                                ? "provider_model_not_found"
+                                : providerHttpStatus === 400
+                                    ? "provider_request_rejected"
+                                    : providerHttpStatus >= 500
+                                        ? "provider_temporarily_unavailable"
+                                        : /timeout|timed out|aborterror/.test(lowerMessage)
+                                            ? "provider_timeout"
+                                            : /no ai provider is configured/.test(lowerMessage)
+                                                ? "no_provider_configured"
+                                                : /json|parse|response did not contain/.test(lowerMessage)
+                                                    ? "provider_response_parse_error"
+                                                    : "provider_request_failed";
                 aiExtractionDiagnostics.status = safeErrorCode;
+                aiExtractionDiagnostics.httpStatus = providerHttpStatus;
                 aiExtractionDiagnostics.errorType = error && error.name ? String(error.name).slice(0, 60) : "Error";
                 aiExtractionDiagnostics.errorMessage = safeErrorCode;
                 console.warn("Absentee extraction fell back to deterministic evidence:", safeErrorCode);
