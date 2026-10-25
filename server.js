@@ -1180,8 +1180,11 @@ const FOOTBALL_NEWS_CACHE_TTL_MS = 5 * 60 * 1000;
 const FOOTBALL_NEWS_MAX_AGE_DAYS = 7;
 
 const FOOTBALL_NEWS_MAX_ARTICLE_FETCHES = 8;
-async function extractFullNewsStory(articleUrl, publisherUrl = null, articleTitle = "", allowPublisherResolve = true) {
-    if (!/^https?:\/\//i.test(String(articleUrl || ""))) return null;
+async function extractFullNewsStory(articleUrl, publisherUrl = null, articleTitle = "", allowPublisherResolve = true, diagnostics = null) {
+    if (!/^https?:\/\//i.test(String(articleUrl || ""))) {
+        if (diagnostics) diagnostics.push({ stage: "input", result: "invalid_url" });
+        return null;
+    }
     try {
         const response = await fetch(articleUrl, {
             headers: {
@@ -1191,9 +1194,15 @@ async function extractFullNewsStory(articleUrl, publisherUrl = null, articleTitl
             signal: AbortSignal.timeout(6500),
             redirect: "follow"
         });
-        if (!response.ok) return null;
         const type = response.headers.get("content-type") || "";
-        if (!/text\/html|application\/xhtml\+xml/i.test(type)) return null;
+        if (!response.ok) {
+            if (diagnostics) diagnostics.push({ stage: "fetch", result: "http_error", status: response.status, host: new URL(response.url || articleUrl).hostname });
+            return null;
+        }
+        if (!/text\/html|application\/xhtml\+xml/i.test(type)) {
+            if (diagnostics) diagnostics.push({ stage: "fetch", result: "not_html", status: response.status, contentType: type });
+            return null;
+        }
         const html = (await response.text()).slice(0, 1500000);
         // Google News' article wrapper contains links to the original publisher.
         // Resolve the matching story URL so extraction reads the publisher page,
@@ -1230,8 +1239,10 @@ async function extractFullNewsStory(articleUrl, publisherUrl = null, articleTitl
                         if (score > bestScore) { bestScore = score; bestUrl = candidate.toString(); }
                     }
                     if (bestUrl && bestScore >= 2) {
-                        return await extractFullNewsStory(bestUrl, null, articleTitle, false);
+                        if (diagnostics) diagnostics.push({ stage: "resolve", result: "publisher_url_found", candidateCount: hrefs.length, score: bestScore, host: new URL(bestUrl).hostname, path: new URL(bestUrl).pathname.slice(0, 120) });
+                        return await extractFullNewsStory(bestUrl, null, articleTitle, false, diagnostics);
                     }
+                    if (diagnostics) diagnostics.push({ stage: "resolve", result: "publisher_url_not_found", candidateCount: hrefs.length, expectedHost, responseHost: currentHost });
                 }
             } catch (_) {}
         }
@@ -1268,9 +1279,14 @@ async function extractFullNewsStory(articleUrl, publisherUrl = null, articleTitl
         const ogDescription = (html.match(/<meta\b[^>]*(?:property|name)=["'](?:og:description|description)["'][^>]*content=["']([^"']+)["'][^>]*>/i) || [])[1];
         if (ogDescription) candidates.push(decodeHtml(ogDescription));
         const clean = candidates.sort((a, b) => b.length - a.length)[0];
-        if (!clean || clean.length < 350) return null;
+        if (!clean || clean.length < 350) {
+            if (diagnostics) diagnostics.push({ stage: "extract", result: "insufficient_text", htmlLength: html.length, paragraphCount: paragraphs.length, candidateLengths: candidates.map(candidate => candidate.length).sort((a, b) => b - a).slice(0, 5), responseHost: new URL(response.url || articleUrl).hostname });
+            return null;
+        }
+        if (diagnostics) diagnostics.push({ stage: "extract", result: "text_extracted", textLength: clean.length, responseHost: new URL(response.url || articleUrl).hostname });
         return clean.slice(0, 1200);
-    } catch (_) {
+    } catch (error) {
+        if (diagnostics) diagnostics.push({ stage: "exception", result: "fetch_failed", errorType: error && error.name || "Error", message: String(error && error.message || "").slice(0, 120) });
         return null;
     }
 }
@@ -1364,6 +1380,7 @@ app.get("/api/match-intelligence/news", async (req, res) => {
     res.set("Pragma", "no-cache");
     res.set("Expires", "0");
     const forceRefresh = /^(1|true|yes)$/i.test(String(req.query.forceRefresh || ""));
+    const includeStoryDiagnostics = /^(1|true|yes)$/i.test(String(req.query.diagStory || ""));
     const cached = footballNewsCache.get(cacheKey);
     if (!forceRefresh && cached && Date.now() < cached.expiresAt) {
         res.set("X-Football-Genie-Cache", "HIT");
@@ -2139,9 +2156,11 @@ app.get("/api/match-intelligence/news", async (req, res) => {
     items = await Promise.all(items.map(async article => {
         if (fullStoryFetches >= FOOTBALL_NEWS_MAX_ARTICLE_FETCHES || !article.url) return article;
         fullStoryFetches++;
-        const story = await extractFullNewsStory(article.url, article.publisherSourceUrl, article.title);
-        return story ? { ...article, snippet: story, fullStoryExtracted: true } :
-            { ...article, fullStoryExtracted: false };
+        const storyDiagnostics = includeStoryDiagnostics ? [] : null;
+        const story = await extractFullNewsStory(article.url, article.publisherSourceUrl, article.title, true, storyDiagnostics);
+        const diagnosticFields = storyDiagnostics ? { storyExtractionDiagnostics: storyDiagnostics } : {};
+        return story ? { ...article, snippet: story, fullStoryExtracted: true, ...diagnosticFields } :
+            { ...article, fullStoryExtracted: false, ...diagnosticFields };
     }));
     const fetchedAtMs = Date.now();
     const fixtureSpecificCount = items.filter(item => item.fixtureRelevance === "direct_fixture").length;
