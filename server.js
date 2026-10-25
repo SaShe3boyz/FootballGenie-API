@@ -522,7 +522,7 @@ app.get("/api/more-fixtures", async (req, res) => {
     const { competition, date, status, season } = req.query;
     const validStatuses = new Set(["scheduled", "live", "finished", "postponed", "cancelled", "unknown", "all"]);
 
-    if (date && !/^\\d{4}-\\d{2}-\\d{2}$/.test(String(date))) {
+    if (date && !/^\d{4}-\d{2}-\d{2}$/.test(String(date))) {
         return res.status(400).json({ error: "date must use YYYY-MM-DD format." });
     }
     if (competition && !/^comp_[a-zA-Z0-9_-]{2,100}$/.test(String(competition))) {
@@ -531,7 +531,7 @@ app.get("/api/more-fixtures", async (req, res) => {
     if (status && !validStatuses.has(String(status).toLowerCase())) {
         return res.status(400).json({ error: "status must be scheduled, live, finished, postponed, cancelled, unknown or all." });
     }
-    if (season && !/^[0-9]{4}(?:\\/[0-9]{2,4})?$/.test(String(season))) {
+    if (season && !/^[0-9]{4}(?:\/[0-9]{2,4})?$/.test(String(season))) {
         return res.status(400).json({ error: "Invalid season format." });
     }
 
