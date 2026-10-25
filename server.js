@@ -1242,6 +1242,60 @@ async function extractFullNewsStory(articleUrl, publisherUrl = null, articleTitl
                         if (diagnostics) diagnostics.push({ stage: "resolve", result: "publisher_url_found", candidateCount: hrefs.length, score: bestScore, host: new URL(bestUrl).hostname, path: new URL(bestUrl).pathname.slice(0, 120) });
                         return await extractFullNewsStory(bestUrl, null, articleTitle, false, diagnostics);
                     }
+                    // Google News often exposes only its own redirect URL. Search the
+                    // publisher's indexed pages by the exact headline to find the
+                    // original article URL, then extract from that official page.
+                    try {
+                        const searchUrl = "https://www.google.com/search?" + new URLSearchParams({
+                            q: "site:" + expectedHost + " " + String(articleTitle || ""),
+                            num: "8"
+                        }).toString();
+                        const searchResponse = await fetch(searchUrl, {
+                            headers: {
+                                "User-Agent": "Mozilla/5.0 (compatible; FootballGenie/1.0)",
+                                "Accept": "text/html,application/xhtml+xml"
+                            },
+                            signal: AbortSignal.timeout(4500),
+                            redirect: "follow"
+                        });
+                        if (searchResponse.ok && /text\/html|application\/xhtml\+xml/i.test(searchResponse.headers.get("content-type") || "")) {
+                            const searchHtml = (await searchResponse.text()).slice(0, 700000);
+                            const searchLinks = [...searchHtml.matchAll(/href=["']([^"']+)["']/gi)]
+                                .map(match => match[1])
+                                .map(value => {
+                                    try {
+                                        let candidate = decodeNewsXml(value);
+                                        if (candidate.startsWith("/url?")) candidate = "https://www.google.com" + candidate;
+                                        const parsed = new URL(candidate);
+                                        const target = parsed.searchParams.get("q") || parsed.searchParams.get("url");
+                                        if (target && /^https?:\/\//i.test(target)) return new URL(target);
+                                        return parsed;
+                                    } catch (_) { return null; }
+                                })
+                                .filter(url => url && (url.hostname.toLowerCase().replace(/^www\./, "") === expectedHost ||
+                                    url.hostname.toLowerCase().replace(/^www\./, "").endsWith("." + expectedHost)) &&
+                                    url.pathname.length > 8 && !/\.(?:jpg|jpeg|png|gif|svg|webp|css|js)$/i.test(url.pathname));
+                            let searchBestUrl = null;
+                            let searchBestScore = 0;
+                            for (const candidate of searchLinks) {
+                                const pathText = decodeURIComponent(candidate.pathname).toLowerCase().replace(/[^a-z0-9]+/g, " ");
+                                const score = titleTokens.filter(token => pathText.includes(token)).length;
+                                if (score > searchBestScore) {
+                                    searchBestScore = score;
+                                    searchBestUrl = candidate.toString();
+                                }
+                            }
+                            if (searchBestUrl && searchBestScore >= 2) {
+                                if (diagnostics) diagnostics.push({ stage: "resolve", result: "publisher_search_found", candidateCount: searchLinks.length, score: searchBestScore, host: new URL(searchBestUrl).hostname, path: new URL(searchBestUrl).pathname.slice(0, 120) });
+                                return await extractFullNewsStory(searchBestUrl, null, articleTitle, false, diagnostics);
+                            }
+                            if (diagnostics) diagnostics.push({ stage: "resolve", result: "publisher_search_no_match", candidateCount: searchLinks.length, expectedHost });
+                        } else if (diagnostics) {
+                            diagnostics.push({ stage: "resolve", result: "publisher_search_unavailable", status: searchResponse.status });
+                        }
+                    } catch (error) {
+                        if (diagnostics) diagnostics.push({ stage: "resolve", result: "publisher_search_error", error: String(error && error.name || "Error") });
+                    }
                     if (diagnostics) diagnostics.push({ stage: "resolve", result: "publisher_url_not_found", candidateCount: hrefs.length, expectedHost, responseHost: currentHost });
                 }
             } catch (_) {}
