@@ -1209,8 +1209,11 @@ async function extractFullNewsStory(articleUrl, publisherUrl = null, articleTitl
                         .map(match => match[1]);
                     // Some publisher URLs appear as visible text in the wrapper rather
                     // than as an href, so inspect those too.
-                    const rawUrlCandidates = [...html.matchAll(/https?:\/\/[^"'<>\s]+/gi)]
-                        .map(match => match[0].replace(/&amp;/g, "&").replace(/[),.;]+$/, ""));
+                    const rawUrlCandidates = [...html.matchAll(/(?:https?:\/\/)?(?:www\.)?[a-z0-9.-]+\.[a-z]{2,}\/[a-z0-9_~:/?#[\]@!$&'()*+,;=%.-]+/gi)]
+                        .map(match => {
+                            const value = match[0].replace(/&amp;/g, "&").replace(/[),.;]+$/, "");
+                            return /^https?:\/\//i.test(value) ? value : "https://" + value;
+                        });
                     const hrefs = [...hrefCandidates, ...rawUrlCandidates]
                         .map(value => {
                             try { return new URL(decodeNewsXml(value), response.url || articleUrl); }
