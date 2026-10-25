@@ -1205,9 +1205,15 @@ async function extractFullNewsStory(articleUrl, publisherUrl = null, articleTitl
                 if (expectedHost && currentHost.endsWith("news.google.com")) {
                     const titleTokens = String(articleTitle || "").toLowerCase()
                         .replace(/[^a-z0-9]+/g, " ").split(/\s+/).filter(token => token.length > 3);
-                    const hrefs = [...html.matchAll(/(?:href|content)\s*=\s*["']([^"']+)["']/gi)]
-                        .map(match => {
-                            try { return new URL(decodeNewsXml(match[1]), response.url || articleUrl); }
+                    const hrefCandidates = [...html.matchAll(/(?:href|content)\s*=\s*["']([^"']+)["']/gi)]
+                        .map(match => match[1]);
+                    // Some publisher URLs appear as visible text in the wrapper rather
+                    // than as an href, so inspect those too.
+                    const rawUrlCandidates = [...html.matchAll(/https?:\/\/[^"'<>\s]+/gi)]
+                        .map(match => match[0].replace(/&amp;/g, "&").replace(/[),.;]+$/, ""));
+                    const hrefs = [...hrefCandidates, ...rawUrlCandidates]
+                        .map(value => {
+                            try { return new URL(decodeNewsXml(value), response.url || articleUrl); }
                             catch (_) { return null; }
                         })
                         .filter(url => url && (url.hostname.toLowerCase().replace(/^www\./, "") === expectedHost ||
