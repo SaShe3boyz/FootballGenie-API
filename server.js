@@ -3339,7 +3339,7 @@ app.post("/api/ai/analyze", async (req, res) => {
         JSON.stringify(completedHistory);
 
     if (validationSummary) {
-        userContent += "\\nPERFORMANCE ANALYST MODE: Treat supplied metrics and records as the only evidence. Separate facts from hypotheses. Prioritize recommendations that can be represented as explicit, configurable parameters or testable calculation changes; do not invent existing controls. For each recommendation, name the observed problem, proposed experiment, baseline comparison, held-out/backtest method, measurable pass/fail criterion, sample-size caveat, and rollback condition. Do not apply or claim to apply any change. Explicitly say adoption is pending implementation and successful out-of-sample validation. If data is insufficient, recommend gathering more evaluated matches instead of overfitting."; 
+        userContent += "\nPERFORMANCE ANALYST MODE: Treat supplied metrics and records as the only evidence. Separate facts from hypotheses. Prioritize recommendations that can be represented as explicit, configurable parameters or testable calculation changes; do not invent existing controls. For each recommendation, name the observed problem, proposed experiment, baseline comparison, held-out/backtest method, measurable pass/fail criterion, sample-size caveat, and rollback condition. Do not apply or claim to apply any change. Explicitly say adoption is pending implementation and successful out-of-sample validation. If data is insufficient, recommend gathering more evaluated matches instead of overfitting."; 
     }
 
     // Connect the existing Android AI chat to the agreed free online-publication
