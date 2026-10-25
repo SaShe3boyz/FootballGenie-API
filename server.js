@@ -1180,7 +1180,7 @@ const FOOTBALL_NEWS_CACHE_TTL_MS = 5 * 60 * 1000;
 const FOOTBALL_NEWS_MAX_AGE_DAYS = 7;
 
 const FOOTBALL_NEWS_MAX_ARTICLE_FETCHES = 8;
-async function extractFullNewsStory(articleUrl) {
+async function extractFullNewsStory(articleUrl, publisherUrl = null, articleTitle = "", allowPublisherResolve = true) {
     if (!/^https?:\/\//i.test(String(articleUrl || ""))) return null;
     try {
         const response = await fetch(articleUrl, {
@@ -1195,6 +1195,37 @@ async function extractFullNewsStory(articleUrl) {
         const type = response.headers.get("content-type") || "";
         if (!/text\/html|application\/xhtml\+xml/i.test(type)) return null;
         const html = (await response.text()).slice(0, 1500000);
+        // Google News' article wrapper contains links to the original publisher.
+        // Resolve the matching story URL so extraction reads the publisher page,
+        // not just the aggregator's navigation and headline.
+        if (allowPublisherResolve && publisherUrl) {
+            try {
+                const expectedHost = new URL(publisherUrl).hostname.toLowerCase().replace(/^www\\./, "");
+                const currentHost = new URL(articleUrl).hostname.toLowerCase().replace(/^www\\./, "");
+                if (expectedHost && currentHost.endsWith("news.google.com")) {
+                    const titleTokens = String(articleTitle || "").toLowerCase()
+                        .replace(/[^a-z0-9]+/g, " ").split(/\\s+/).filter(token => token.length > 3);
+                    const hrefs = [...html.matchAll(/(?:href|content)\\s*=\\s*["']([^"']+)["']/gi)]
+                        .map(match => {
+                            try { return new URL(decodeNewsXml(match[1]), response.url || articleUrl); }
+                            catch (_) { return null; }
+                        })
+                        .filter(url => url && (url.hostname.toLowerCase().replace(/^www\\./, "") === expectedHost ||
+                            url.hostname.toLowerCase().replace(/^www\\./, "").endsWith("." + expectedHost)) &&
+                            url.pathname.length > 8 && !/\\.(?:jpg|jpeg|png|gif|svg|webp|css|js)$/i.test(url.pathname));
+                    let bestUrl = null;
+                    let bestScore = 0;
+                    for (const candidate of hrefs) {
+                        const pathText = decodeURIComponent(candidate.pathname).toLowerCase().replace(/[^a-z0-9]+/g, " ");
+                        const score = titleTokens.filter(token => pathText.includes(token)).length;
+                        if (score > bestScore) { bestScore = score; bestUrl = candidate.toString(); }
+                    }
+                    if (bestUrl && bestScore >= 2) {
+                        return await extractFullNewsStory(bestUrl, null, articleTitle, false);
+                    }
+                }
+            } catch (_) {}
+        }
         const decodeHtml = value => String(value || "")
             .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1")
             .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, " ")
@@ -2099,7 +2130,7 @@ app.get("/api/match-intelligence/news", async (req, res) => {
     items = await Promise.all(items.map(async article => {
         if (fullStoryFetches >= FOOTBALL_NEWS_MAX_ARTICLE_FETCHES || !article.url) return article;
         fullStoryFetches++;
-        const story = await extractFullNewsStory(article.url);
+        const story = await extractFullNewsStory(article.url, article.publisherSourceUrl, article.title);
         return story ? { ...article, snippet: story, fullStoryExtracted: true } :
             { ...article, fullStoryExtracted: false };
     }));
