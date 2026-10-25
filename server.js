@@ -1215,11 +1215,21 @@ async function extractFullNewsStory(articleUrl) {
             const text = decodeHtml(match[1]);
             if (text.length > 300) candidates.push(text);
         }
+        // Google News can render the publisher story inside its wrapper without
+        // an <article> element or articleBody JSON-LD. Use a few meaningful lead
+        // paragraphs as a compact in-app detail preview, excluding boilerplate.
+        const paragraphs = [...html.matchAll(/<p\b[^>]*>([\s\S]*?)<\/p>/gi)]
+            .map(match => decodeHtml(match[1]))
+            .filter(text => text.length > 45 &&
+                !/^(related news|subscribe|sign up|stay up to date|follow us|privacy policy|terms (and|\&)|cookie policy|copyright)/i.test(text))
+            .slice(0, 5);
+        const paragraphPreview = paragraphs.join(" ");
+        if (paragraphPreview.length > 300) candidates.push(paragraphPreview.slice(0, 2600));
         const ogDescription = (html.match(/<meta\b[^>]*(?:property|name)=["'](?:og:description|description)["'][^>]*content=["']([^"']+)["'][^>]*>/i) || [])[1];
         if (ogDescription) candidates.push(decodeHtml(ogDescription));
         const clean = candidates.sort((a, b) => b.length - a.length)[0];
         if (!clean || clean.length < 350) return null;
-        return clean.slice(0, 10000);
+        return clean.slice(0, 2600);
     } catch (_) {
         return null;
     }
