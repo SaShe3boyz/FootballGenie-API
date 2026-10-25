@@ -2172,12 +2172,12 @@ app.get("/api/match-intelligence/news", async (req, res) => {
             const normalizedTitle = String(article.title || "")
                 .replace(/&nbsp;|&#160;/gi, " ").replace(/&amp;/gi, "&")
                 .replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
-            const detailBeyondHeadline = detailText.toLowerCase()
-                .replace(normalizedTitle.toLowerCase(), " ")
-                .replace(String(article.source || "").toLowerCase(), " ")
-                .replace(/^(?:[-–—|:;,.\s])+/, "")
-                .replace(/\s+/g, " ").trim();
-            const headlineOnly = !detailText || detailBeyondHeadline.length < 35;
+            const headlineAndSourceTokens = new Set((normalizedTitle + " " + String(article.source || ""))
+                .toLowerCase().replace(/[^a-z0-9]+/g, " ").split(/\s+/).filter(token => token.length > 2));
+            const detailBeyondHeadlineTokens = detailText.toLowerCase()
+                .replace(/[^a-z0-9]+/g, " ").split(/\s+/)
+                .filter(token => token.length > 2 && !headlineAndSourceTokens.has(token));
+            const headlineOnly = !detailText || detailBeyondHeadlineTokens.length < 5;
             return {
                 ...article,
                 fullInformation: [article.title, detailText].filter(Boolean).join("\n\n"),
