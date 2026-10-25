@@ -2368,8 +2368,11 @@ app.get("/api/match-intelligence/news", async (req, res) => {
             // Prefer a resolved original publisher URL; never send users to a search aggregator.
             const articleSourceUrl = [article.publisherSourceUrl, article.url].find(candidate => {
                 try {
-                    if (!candidate || !/^https?:\\/\\//i.test(String(candidate))) return false;
-                    const host = new URL(String(candidate)).hostname.toLowerCase().replace(/^www\\./, "");
+                    const candidateText = String(candidate || "");
+                    if (!candidateText.startsWith("https://") && !candidateText.startsWith("http://")) return false;
+                    const parsedUrl = new URL(candidateText);
+                    const rawHost = parsedUrl.hostname.toLowerCase();
+                    const host = rawHost.startsWith("www.") ? rawHost.slice(4) : rawHost;
                     return host !== "news.google.com" && !host.endsWith(".news.google.com") &&
                         host !== "bing.com" && !host.endsWith(".bing.com") &&
                         host !== "msn.com" && !host.endsWith(".msn.com");
