@@ -669,17 +669,37 @@ app.get("/api/matches", async (req, res) => {
             }
             playedCount += Number(data.resultSet && data.resultSet.played || 0);
         }
-        // Merge independently queried live matches by ID, overriding stale status/details
-        // from a date-window result if the same match appears in both responses.
-        for (const match of liveMatches) {
-            if (match && match.id != null) allMatches.set(match.id, match);
-        }
-
-        const all = Array.from(allMatches.values());
+        // Merge independently queried live matches carefully: never let the LIVE-only
+        // response overwrite a finished result already present in the date-window response.
         const liveStatuses = new Set(["IN_PLAY", "PAUSED", "EXTRA_TIME", "PENALTY_SHOOTOUT"]);
         const finishedStatuses = new Set(["FINISHED", "AWARDED"]);
         const nowMs = Date.now();
         const kickoff = match => Date.parse(match.utcDate || "") || 0;
+        for (const match of liveMatches) {
+            if (!match || match.id == null) continue;
+            const existing = allMatches.get(match.id);
+            if (existing && finishedStatuses.has(existing.status)) continue;
+            // A provider's LIVE endpoint can occasionally retain an old status. Only
+            // accept it as live if kickoff was recent; stale entries are not allowed to
+            // replace a newer schedule/result record.
+            const ageMs = nowMs - kickoff(match);
+            if (liveStatuses.has(match.status) && ageMs > 5 * 60 * 60 * 1000) continue;
+            allMatches.set(match.id, match);
+        }
+
+        const all = Array.from(allMatches.values());
+        // Guard against stale live statuses returned by the date-window endpoint too.
+        // If the match started over five hours ago and a full-time score exists, treat it
+        // as finished; without a final score, remove it from LIVE rather than guessing.
+        for (const match of all) {
+            if (!liveStatuses.has(match.status) || nowMs - kickoff(match) <= 5 * 60 * 60 * 1000) continue;
+            const score = match.score && match.score.fullTime;
+            if (score && score.home != null && score.away != null) {
+                match.status = "FINISHED";
+            } else {
+                match.status = "SUSPENDED";
+            }
+        }
         // Put live games first, then future fixtures by kickoff, then recent completed games
         // newest-first. This prevents three days of finished matches hiding today's live games.
         all.sort((a, b) => {
