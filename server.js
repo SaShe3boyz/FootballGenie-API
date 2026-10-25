@@ -1794,8 +1794,26 @@ app.get("/api/match-intelligence/news", async (req, res) => {
         const atomLink = (block.match(/<link\b[^>]*\bhref\s*=\s*["']([^"']+)["'][^>]*\/?\s*>/i) || [])[1] || "";
         const link = newsXmlTag(block, "link") || decodeNewsXml(atomLink);
         const publishedAt = newsXmlTag(block, "pubDate") || newsXmlTag(block, "published") || newsXmlTag(block, "updated");
-        const description = (newsXmlTag(block, "description") || newsXmlTag(block, "summary") || newsXmlTag(block, "content"))
-            .replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").slice(0, 1800);
+        // RSS providers sometimes put the useful excerpt in content:encoded while
+        // description contains only the headline and publisher. Choose the richest
+        // available feed excerpt instead of always taking the first short field.
+        const descriptionCandidates = [
+            newsXmlTag(block, "description"),
+            newsXmlTag(block, "summary"),
+            newsXmlTag(block, "encoded"),
+            newsXmlTag(block, "content")
+        ].map(value => String(value || "")
+            .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1")
+            .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, " ")
+            .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, " ")
+            .replace(/<[^>]*>/g, " ")
+            .replace(/&nbsp;|&#160;/gi, " ")
+            .replace(/&amp;/gi, "&").replace(/&quot;/gi, '"')
+            .replace(/&#39;|&apos;/gi, "'").replace(/&lt;/gi, "<").replace(/&gt;/gi, ">")
+            .replace(/\s+/g, " ").trim())
+            .filter(Boolean)
+            .sort((a, b) => b.length - a.length);
+        const description = String(descriptionCandidates[0] || "").slice(0, 1800);
         const searchTeam = newsXmlTag(block, "searchteam");
         const searchProvider = newsXmlTag(block, "searchprovider");
         const sourceTagMatch = block.match(/<(?:[A-Za-z0-9_.-]+:)?source\b([^>]*)>([\s\S]*?)<\/(?:[A-Za-z0-9_.-]+:)?source>/i);
