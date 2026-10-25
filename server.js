@@ -1200,19 +1200,19 @@ async function extractFullNewsStory(articleUrl, publisherUrl = null, articleTitl
         // not just the aggregator's navigation and headline.
         if (allowPublisherResolve && publisherUrl) {
             try {
-                const expectedHost = new URL(publisherUrl).hostname.toLowerCase().replace(/^www\\./, "");
-                const currentHost = new URL(articleUrl).hostname.toLowerCase().replace(/^www\\./, "");
+                const expectedHost = new URL(publisherUrl).hostname.toLowerCase().replace(/^www\./, "");
+                const currentHost = new URL(articleUrl).hostname.toLowerCase().replace(/^www\./, "");
                 if (expectedHost && currentHost.endsWith("news.google.com")) {
                     const titleTokens = String(articleTitle || "").toLowerCase()
-                        .replace(/[^a-z0-9]+/g, " ").split(/\\s+/).filter(token => token.length > 3);
-                    const hrefs = [...html.matchAll(/(?:href|content)\\s*=\\s*["']([^"']+)["']/gi)]
+                        .replace(/[^a-z0-9]+/g, " ").split(/\s+/).filter(token => token.length > 3);
+                    const hrefs = [...html.matchAll(/(?:href|content)\s*=\s*["']([^"']+)["']/gi)]
                         .map(match => {
                             try { return new URL(decodeNewsXml(match[1]), response.url || articleUrl); }
                             catch (_) { return null; }
                         })
-                        .filter(url => url && (url.hostname.toLowerCase().replace(/^www\\./, "") === expectedHost ||
-                            url.hostname.toLowerCase().replace(/^www\\./, "").endsWith("." + expectedHost)) &&
-                            url.pathname.length > 8 && !/\\.(?:jpg|jpeg|png|gif|svg|webp|css|js)$/i.test(url.pathname));
+                        .filter(url => url && (url.hostname.toLowerCase().replace(/^www\./, "") === expectedHost ||
+                            url.hostname.toLowerCase().replace(/^www\./, "").endsWith("." + expectedHost)) &&
+                            url.pathname.length > 8 && !/\.(?:jpg|jpeg|png|gif|svg|webp|css|js)$/i.test(url.pathname));
                     let bestUrl = null;
                     let bestScore = 0;
                     for (const candidate of hrefs) {
