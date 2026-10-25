@@ -2364,13 +2364,27 @@ app.get("/api/match-intelligence/news", async (req, res) => {
                     }
                 } catch (_) {}
             }
+            // Expose a direct publisher article URL for the app's clickable source link.
+            // Prefer a resolved original publisher URL; never send users to a search aggregator.
+            const articleSourceUrl = [article.publisherSourceUrl, article.url].find(candidate => {
+                try {
+                    if (!candidate || !/^https?:\\/\\//i.test(String(candidate))) return false;
+                    const host = new URL(String(candidate)).hostname.toLowerCase().replace(/^www\\./, "");
+                    return host !== "news.google.com" && !host.endsWith(".news.google.com") &&
+                        host !== "bing.com" && !host.endsWith(".bing.com") &&
+                        host !== "msn.com" && !host.endsWith(".msn.com");
+                } catch (_) {
+                    return false;
+                }
+            }) || null;
             return {
                 ...article,
-                url: null,
+                url: articleSourceUrl,
+                articleSourceUrl,
                 brandSignature: "FOOTBALLGENIE",
                 sourceLabel: "FOOTBALL GENIE",
                 publisherLabel,
-                sourceLinkHidden: true
+                sourceLinkHidden: !articleSourceUrl
             };
         }),
         importantNotice: ""
