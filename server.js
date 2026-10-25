@@ -2124,13 +2124,19 @@ app.get("/api/match-intelligence/news", async (req, res) => {
         },
         count: items.length,
         articles: items.map(article => {
-            const detailText = String(article.snippet || "").trim();
-            const headlineOnly = !detailText ||
-                detailText.replace(/&nbsp;|&#160;/gi, " ").replace(/<[^>]*>/g, " ")
-                    .replace(/\s+/g, " ").trim().toLowerCase() ===
-                String(article.title || "").replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim().toLowerCase() ||
-                detailText.replace(/&nbsp;|&#160;/gi, " ").replace(/<[^>]*>/g, " ")
-                    .replace(/\s+/g, " ").trim().length < 180;
+            const detailText = String(article.snippet || "").trim()
+                .replace(/&nbsp;|&#160;/gi, " ").replace(/&amp;/gi, "&")
+                .replace(/&quot;/gi, '"').replace(/&#39;|&apos;/gi, "'")
+                .replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+            const normalizedTitle = String(article.title || "")
+                .replace(/&nbsp;|&#160;/gi, " ").replace(/&amp;/gi, "&")
+                .replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+            const detailBeyondHeadline = detailText.toLowerCase()
+                .replace(normalizedTitle.toLowerCase(), " ")
+                .replace(String(article.source || "").toLowerCase(), " ")
+                .replace(/^(?:[-–—|:;,.\s])+/, "")
+                .replace(/\s+/g, " ").trim();
+            const headlineOnly = !detailText || detailBeyondHeadline.length < 35;
             return {
                 ...article,
                 fullInformation: [article.title, detailText].filter(Boolean).join("\n\n"),
