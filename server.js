@@ -1179,7 +1179,7 @@ const footballNewsCache = new Map();
 const FOOTBALL_NEWS_CACHE_TTL_MS = 5 * 60 * 1000;
 const FOOTBALL_NEWS_MAX_AGE_DAYS = 7;
 
-const FOOTBALL_NEWS_MAX_ARTICLE_FETCHES = 5;
+const FOOTBALL_NEWS_MAX_ARTICLE_FETCHES = 8;
 async function extractFullNewsStory(articleUrl) {
     if (!/^https?:\/\//i.test(String(articleUrl || ""))) return null;
     try {
@@ -2105,7 +2105,27 @@ app.get("/api/match-intelligence/news", async (req, res) => {
             googleNewsLinksMatchedToBingPublisher: bingPublisherLinksMatched
         },
         count: items.length,
-        articles: items.map(article => ({ ...article, fullInformation: [article.title, article.snippet].filter(Boolean).join("\n\n"), brandSignature: "FOOTBALLGENIE", sourceLabel: "FOOTBALL GENIE", informationOnly: true })),
+        articles: items.map(article => {
+            const detailText = String(article.snippet || "").trim();
+            const headlineOnly = !detailText ||
+                detailText.replace(/&nbsp;|&#160;/gi, " ").replace(/<[^>]*>/g, " ")
+                    .replace(/\s+/g, " ").trim().toLowerCase() ===
+                String(article.title || "").replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim().toLowerCase() ||
+                detailText.replace(/&nbsp;|&#160;/gi, " ").replace(/<[^>]*>/g, " ")
+                    .replace(/\s+/g, " ").trim().length < 180;
+            return {
+                ...article,
+                fullInformation: [article.title, detailText].filter(Boolean).join("\n\n"),
+                articleDetails: headlineOnly
+                    ? "The news feed did not provide enough article text for a reliable detailed summary. Football Genie will not invent missing details."
+                    : detailText,
+                detailAvailability: article.fullStoryExtracted ? "article_text_extracted"
+                    : headlineOnly ? "headline_or_short_excerpt_only" : "publisher_excerpt_available",
+                brandSignature: "FOOTBALLGENIE",
+                sourceLabel: "FOOTBALL GENIE",
+                informationOnly: true
+            };
+        }),
         brandSignature: "FOOTBALLGENIE",
         importantNotice: ""
     };
