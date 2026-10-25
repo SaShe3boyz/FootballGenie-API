@@ -2034,10 +2034,12 @@ app.get("/api/match-intelligence/news", async (req, res) => {
                 : reputableFallbackSource ? "reputable_secondary_publication" : "unverified_publication"
         };
     });
-    // Do not rank by source trust tier; relevant recent articles from all publishers are eligible.
+    // Official club websites are ranked first. Reputable secondary publishers remain
+    // fallback context, not official confirmation; relevance and freshness break ties.
     parsedItems.sort((a, b) =>
+        Number(b.officialClubSource) - Number(a.officialClubSource) ||
         b.relevanceScore - a.relevanceScore ||
-        ((a.ageDays === null ? 9999 : a.ageDays) - (b.ageDays === null ? 9999 : b.ageDays)));
+        ((a.ageDays === null ? 9999 : a.ageDays) - (b.ageDays === null ? 9999 : a.ageDays)));
     // Combine the two club-specific searches but remove duplicate headlines.
     // Keep a wider evidence pool so a single-team injury report is not crowded
     // out by repeated fixture previews before absentee extraction runs.
