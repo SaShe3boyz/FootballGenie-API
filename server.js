@@ -454,6 +454,108 @@ res.status(502).json({
 }
 });
 
+// Secondary fixture source is deliberately isolated from /api/matches.
+// Configure OPENFOOT_API_KEY in Render to enable these endpoints.
+const OPENFOOT_BASE_URL = "https://openfootapi.com/v1";
+const moreFixturesCache = new Map();
+const MORE_FIXTURES_CACHE_TTL_MS = 60 * 1000;
+
+async function requestOpenFoot(pathAndQuery) {
+    const key = process.env.OPENFOOT_API_KEY;
+    if (!key) {
+        const error = new Error("The additional fixture source is not configured yet. Set OPENFOOT_API_KEY in Render.");
+        error.statusCode = 503;
+        throw error;
+    }
+
+    const cached = moreFixturesCache.get(pathAndQuery);
+    if (cached && Date.now() < cached.expiresAt) return cached.payload;
+
+    const response = await fetch(OPENFOOT_BASE_URL + pathAndQuery, {
+        method: "GET",
+        headers: {
+            "Accept": "application/json",
+            "Authorization": "Bearer " + key
+        },
+        signal: AbortSignal.timeout(12000)
+    });
+    const payload = await response.json().catch(() => null);
+
+    if (!response.ok) {
+        const error = new Error(
+            payload && payload.error && payload.error.message
+                ? payload.error.message
+                : "The additional fixture provider returned HTTP " + response.status + "."
+        );
+        error.statusCode = response.status === 429 ? 429 : 502;
+        throw error;
+    }
+    if (!payload || !Array.isArray(payload.data)) {
+        const error = new Error("The additional fixture provider returned an unexpected response.");
+        error.statusCode = 502;
+        throw error;
+    }
+
+    moreFixturesCache.set(pathAndQuery, {
+        payload,
+        expiresAt: Date.now() + MORE_FIXTURES_CACHE_TTL_MS
+    });
+    return payload;
+}
+
+app.get("/api/more-fixtures/competitions", async (req, res) => {
+    try {
+        const payload = await requestOpenFoot("/competitions");
+        res.set("X-Football-Genie-Source", "OpenFootAPI");
+        res.set("Cache-Control", "public, max-age=60");
+        return res.json(payload);
+    } catch (error) {
+        console.error("Additional fixture competitions failed:", error.message);
+        return res.status(error.statusCode || 502).json({
+            error: error.message || "Unable to retrieve additional competitions.",
+            source: "OpenFootAPI"
+        });
+    }
+});
+
+app.get("/api/more-fixtures", async (req, res) => {
+    const { competition, date, status, season } = req.query;
+    const validStatuses = new Set(["scheduled", "live", "finished", "postponed", "cancelled", "unknown", "all"]);
+
+    if (date && !/^\\d{4}-\\d{2}-\\d{2}$/.test(String(date))) {
+        return res.status(400).json({ error: "date must use YYYY-MM-DD format." });
+    }
+    if (competition && !/^comp_[a-zA-Z0-9_-]{2,100}$/.test(String(competition))) {
+        return res.status(400).json({ error: "Invalid competition ID." });
+    }
+    if (status && !validStatuses.has(String(status).toLowerCase())) {
+        return res.status(400).json({ error: "status must be scheduled, live, finished, postponed, cancelled, unknown or all." });
+    }
+    if (season && !/^[0-9]{4}(?:\\/[0-9]{2,4})?$/.test(String(season))) {
+        return res.status(400).json({ error: "Invalid season format." });
+    }
+
+    const params = new URLSearchParams();
+    if (competition) params.set("competition", String(competition));
+    if (date) params.set("date", String(date));
+    if (status && String(status).toLowerCase() !== "all") params.set("status", String(status).toLowerCase());
+    if (season) params.set("season", String(season));
+    const query = params.toString();
+
+    try {
+        const payload = await requestOpenFoot("/matches" + (query ? "?" + query : ""));
+        res.set("X-Football-Genie-Source", "OpenFootAPI");
+        res.set("Cache-Control", "public, max-age=60");
+        return res.json(payload);
+    } catch (error) {
+        console.error("Additional fixtures request failed:", error.message);
+        return res.status(error.statusCode || 502).json({
+            error: error.message || "Unable to retrieve additional fixtures.",
+            source: "OpenFootAPI"
+        });
+    }
+});
+
 // Short-lived cache keeps repeated fixture loads fast while allowing live statuses to update frequently.
 const matchesCache = new Map();
 const MATCH_CACHE_TTL_MS = 90 * 1000;
