@@ -1290,8 +1290,62 @@ async function extractFullNewsStory(articleUrl, publisherUrl = null, articleTitl
                                 return await extractFullNewsStory(searchBestUrl, null, articleTitle, false, diagnostics);
                             }
                             if (diagnostics) diagnostics.push({ stage: "resolve", result: "publisher_search_no_match", candidateCount: searchLinks.length, expectedHost });
-                        } else if (diagnostics) {
-                            diagnostics.push({ stage: "resolve", result: "publisher_search_unavailable", status: searchResponse.status });
+                        } else {
+                            if (diagnostics) diagnostics.push({ stage: "resolve", result: "publisher_search_unavailable", status: searchResponse.status });
+                            // Google Search may rate-limit server-side requests. Try Bing as a
+                            // second discovery route, still restricting results to the official
+                            // publisher host and matching the article headline.
+                            try {
+                                const bingUrl = "https://www.bing.com/search?" + new URLSearchParams({
+                                    q: "site:" + expectedHost + " " + String(articleTitle || ""),
+                                    count: "8"
+                                }).toString();
+                                const bingResponse = await fetch(bingUrl, {
+                                    headers: {
+                                        "User-Agent": "Mozilla/5.0 (compatible; FootballGenie/1.0)",
+                                        "Accept": "text/html,application/xhtml+xml"
+                                    },
+                                    signal: AbortSignal.timeout(4500),
+                                    redirect: "follow"
+                                });
+                                if (bingResponse.ok && /text\/html|application\/xhtml\+xml/i.test(bingResponse.headers.get("content-type") || "")) {
+                                    const bingHtml = (await bingResponse.text()).slice(0, 700000);
+                                    const bingLinks = [...bingHtml.matchAll(/href=["']([^"']+)["']/gi)]
+                                        .map(match => match[1])
+                                        .map(value => {
+                                            try {
+                                                let candidate = decodeNewsXml(value);
+                                                if (candidate.startsWith("//")) candidate = "https:" + candidate;
+                                                const parsed = new URL(candidate, "https://www.bing.com");
+                                                const target = parsed.searchParams.get("url") || parsed.searchParams.get("u");
+                                                if (target && /^https?:\/\//i.test(target)) return new URL(target);
+                                                return parsed;
+                                            } catch (_) { return null; }
+                                        })
+                                        .filter(url => url && (url.hostname.toLowerCase().replace(/^www\./, "") === expectedHost ||
+                                            url.hostname.toLowerCase().replace(/^www\./, "").endsWith("." + expectedHost)) &&
+                                            url.pathname.length > 8 && !/\.(?:jpg|jpeg|png|gif|svg|webp|css|js)$/i.test(url.pathname));
+                                    let bingBestUrl = null;
+                                    let bingBestScore = 0;
+                                    for (const candidate of bingLinks) {
+                                        const pathText = decodeURIComponent(candidate.pathname).toLowerCase().replace(/[^a-z0-9]+/g, " ");
+                                        const score = titleTokens.filter(token => pathText.includes(token)).length;
+                                        if (score > bingBestScore) {
+                                            bingBestScore = score;
+                                            bingBestUrl = candidate.toString();
+                                        }
+                                    }
+                                    if (bingBestUrl && bingBestScore >= 2) {
+                                        if (diagnostics) diagnostics.push({ stage: "resolve", result: "publisher_bing_found", candidateCount: bingLinks.length, score: bingBestScore, host: new URL(bingBestUrl).hostname, path: new URL(bingBestUrl).pathname.slice(0, 120) });
+                                        return await extractFullNewsStory(bingBestUrl, null, articleTitle, false, diagnostics);
+                                    }
+                                    if (diagnostics) diagnostics.push({ stage: "resolve", result: "publisher_bing_no_match", candidateCount: bingLinks.length, expectedHost });
+                                } else if (diagnostics) {
+                                    diagnostics.push({ stage: "resolve", result: "publisher_bing_unavailable", status: bingResponse.status });
+                                }
+                            } catch (bingError) {
+                                if (diagnostics) diagnostics.push({ stage: "resolve", result: "publisher_bing_error", error: String(bingError && bingError.name || "Error") });
+                            }
                         }
                     } catch (error) {
                         if (diagnostics) diagnostics.push({ stage: "resolve", result: "publisher_search_error", error: String(error && error.name || "Error") });
