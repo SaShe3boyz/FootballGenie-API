@@ -1229,7 +1229,7 @@ async function extractFullNewsStory(articleUrl) {
         if (ogDescription) candidates.push(decodeHtml(ogDescription));
         const clean = candidates.sort((a, b) => b.length - a.length)[0];
         if (!clean || clean.length < 350) return null;
-        return clean.slice(0, 2600);
+        return clean.slice(0, 1200);
     } catch (_) {
         return null;
     }
