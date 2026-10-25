@@ -1279,9 +1279,14 @@ function classifyFootballNews(title, snippet) {
     const categories = [];
     if (/injur|injured|injury|fitness|knock|hamstring|ankle|knee|recover|return to train|medical/.test(text)) categories.push("injury");
     if (/suspend|suspension|red card|yellow-card ban|banned for/.test(text)) categories.push("suspension");
-    if (/line.?up|starting xi|starting eleven|team news|confirmed xi|confirmed line.?up|squad named/.test(text)) categories.push("lineup");
-    if (/manager|coach|press conference|reveals|speaks ahead|comments/.test(text)) categories.push("manager_comment");
-    if (/predicted|prediction|preview|could miss|doubt|questionable|expected to/.test(text)) categories.push("unconfirmed_report");
+    if (/line.?up|starting xi|starting eleven|team news|confirmed xi|confirmed line.?up|squad named|squad announcement/.test(text)) categories.push("lineup");
+    if (/manager|coach|press conference|reveals|speaks ahead|comments|manager says|head coach/.test(text)) categories.push("manager_comment");
+    if (/training|training ground|training session|pre-match preparation|prepares for|preparing for/.test(text)) categories.push("training");
+    if (/transfer|signs for|signing|contract extension|loan deal|transfer window/.test(text)) categories.push("transfer");
+    if (/form| unbeaten|winless|last five|last 5|recent results|match report|match reaction|performance/.test(text)) categories.push("form");
+    if (/preview|previewing|ahead of|matchday|fixture preview|tactical|opposition analysis/.test(text)) categories.push("match_preview");
+    if (/squad|captain|returns to the club|club announcement|official statement|club statement|milestone|academy|youth team/.test(text)) categories.push("squad_update");
+    if (/predicted|prediction|could miss|doubt|questionable|expected to/.test(text)) categories.push("unconfirmed_report");
     if (!categories.length) categories.push("general");
     const certainty = /confirmed|official|will miss|ruled out|suspended for|returns to training|back in training/.test(text)
         ? "reported_as_confirmed_check_original_source"
@@ -1325,20 +1330,22 @@ app.get("/api/match-intelligence/news", async (req, res) => {
     }
     res.set("X-Football-Genie-Cache", forceRefresh ? "BYPASS" : "MISS");
 
-    // Search either team's availability news, not only articles mentioning both clubs.
-    // Most injury reports discuss one club and do not name its next opponent.
+    // General Team News: club announcements, manager comments, training/preparation,
+    // recent form, match previews, squad developments and availability when reported.
+    // Official club sources are preferred; third-party results are filtered for relevance.
     const homeSearchNames = footballTeamAliases(homeTeam).map(name => '"' + name + '"').join(" OR ");
     const awaySearchNames = footballTeamAliases(awayTeam).map(name => '"' + name + '"').join(" OR ");
+    const generalNewsTerms = '("team news" OR "club news" OR manager OR coach OR "press conference" OR training OR "match preview" OR form OR squad OR transfer OR "club statement" OR injury OR suspension OR lineup OR "match reaction")';
     const query = '((' + homeSearchNames + ') OR (' + awaySearchNames +
-        ')) (injury OR injured OR unavailable OR suspension OR suspended OR lineup OR "team news" OR "ruled out" OR "out for" OR "fitness update" OR "press conference") -women -"women\'s" -WSL -ladies';
+        ')) ' + generalNewsTerms + ' -women -"women\'s" -WSL -ladies';
     const googleUrl = "https://news.google.com/rss/search?" + new URLSearchParams({
         q: query + " when:30d", hl: "en", gl: "GB", ceid: "GB:en"
     }).toString();
     // Use only the selected news sources: Google News search plus established
     // football coverage from BBC Sport, Sky Sports and The Athletic. Providers
     // that repeatedly fail or return unsuitable results are intentionally excluded.
-    const homeTeamQuery = '(' + homeSearchNames + ') (injury OR injured OR unavailable OR suspension OR suspended OR "team news" OR "ruled out" OR "out for" OR "fitness update") -women -"women\'s" -WSL -ladies';
-    const awayTeamQuery = '(' + awaySearchNames + ') (injury OR injured OR unavailable OR suspension OR suspended OR "team news" OR "ruled out" OR "out for" OR "fitness update") -women -"women\'s" -WSL -ladies';
+    const homeTeamQuery = '(' + homeSearchNames + ') ' + generalNewsTerms + ' -women -"women\'s" -WSL -ladies';
+    const awayTeamQuery = '(' + awaySearchNames + ') ' + generalNewsTerms + ' -women -"women\'s" -WSL -ladies';
     const teamGoogleUrl = teamQuery => "https://news.google.com/rss/search?" + new URLSearchParams({
         q: teamQuery + " when:30d", hl: "en", gl: "GB", ceid: "GB:en"
     }).toString();
@@ -1537,7 +1544,7 @@ app.get("/api/match-intelligence/news", async (req, res) => {
         const team = requestedTeams.find(name =>
             entry.aliases.some(alias => normalizeTeamName(alias) === normalizeTeamName(name)));
         if (!team) return [];
-        const query = 'site:' + entry.domain + ' "' + team + '" (injury OR injured OR unavailable OR "team news" OR "fitness update" OR "ruled out" OR doubtful OR suspension)';
+        const query = 'site:' + entry.domain + ' "' + team + '" ("team news" OR "club news" OR manager OR coach OR training OR "match preview" OR squad OR transfer OR "club statement" OR injury OR suspension OR lineup)';
         return [{
             name: entry.name,
             url: teamGoogleUrl(query),
@@ -1564,7 +1571,7 @@ app.get("/api/match-intelligence/news", async (req, res) => {
         const team = requestedTeams.find(name =>
             entry.aliases.some(alias => normalizeTeamName(alias) === normalizeTeamName(name)));
         if (!team) return [];
-        const query = 'site:' + entry.domain + ' "' + team + '" (injury OR injured OR unavailable OR "team news" OR "fitness update" OR "ruled out" OR doubtful OR suspension)';
+        const query = 'site:' + entry.domain + ' "' + team + '" ("team news" OR "club news" OR manager OR coach OR training OR "match preview" OR squad OR transfer OR "club statement" OR injury OR suspension OR lineup)';
         return [{
             name: "Bing News RSS - " + entry.name,
             url: bingUrl(query),
@@ -1861,8 +1868,7 @@ app.get("/api/match-intelligence/news", async (req, res) => {
         // be presented as absentee evidence just because a team name appears.
         const managerAvailabilityContext = /\b(available|unavailable|fit|fitness|miss|missing|return|returning|doubt|doubtful|assess|assessment|train|training|squad|selection|ruled out|late test|match fitness|ban|suspend|suspension)\b/i.test(textForChecks);
         const hasRelevantAvailabilitySignal =
-            classification.categories.some(category => ["injury", "suspension", "lineup"].includes(category)) ||
-            (classification.categories.includes("manager_comment") && managerAvailabilityContext);
+            classification.categories.some(category => ["injury", "suspension", "lineup", "manager_comment", "training", "transfer", "form", "match_preview", "squad_update"].includes(category));
         let relevanceScore = (mentionsHome ? 2 : 0) + (mentionsAway ? 2 : 0);
         if (searchContextMatchesTarget) relevanceScore += 2;
         if (mentionsBothTeams) relevanceScore += 4;
@@ -1870,7 +1876,7 @@ app.get("/api/match-intelligence/news", async (req, res) => {
         if (conflictingFixtureOpponent && !mentionsBothTeams) relevanceScore -= 8;
         if (classification.categories.some(category => ["injury", "suspension", "lineup", "manager_comment"].includes(category))) relevanceScore += 2;
         if (classification.categories.includes("unconfirmed_report")) relevanceScore += 1;
-        if (/official|confirmed|press conference|team news|injury update|suspended/.test(lowerTitle)) relevanceScore += 1;
+        if (/official|confirmed|press conference|team news|club news|injury update|suspended|training|match preview|squad|manager|coach|transfer|club statement/.test(lowerTitle)) relevanceScore += 1;
         if (isWomensStory) relevanceScore -= 5;
         return {
             title: title.slice(0, 300),
@@ -1941,7 +1947,7 @@ app.get("/api/match-intelligence/news", async (req, res) => {
         // valuable even when the headline says only "injury update" and does not
         // repeat the club name or an explicit OUT/DOUBTFUL label. Keep them so the
         // absentee route can open the original page and inspect its actual text.
-        const officialAvailabilityLanguage = /\b(injury|injured|injuries|fitness|team news|availability|unavailable|suspension|suspended|ruled out|doubtful|returns? to training|back in training)\b/i
+        const officialAvailabilityLanguage = /\b(injury|injured|injuries|fitness|team news|club news|availability|unavailable|suspension|suspended|ruled out|doubtful|returns? to training|back in training|manager|coach|training|match preview|squad|transfer|club statement|press conference|form|match reaction)\b/i
             .test(item.title);
         const directOfficialTeamResult = isDirectOfficialClubUrlForDiscovery(item.url) &&
             item.searchTeam && [homeTeam, awayTeam].some(name =>
