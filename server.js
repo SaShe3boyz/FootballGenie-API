@@ -3297,6 +3297,43 @@ app.get("/api/match-intelligence/prediction-review", async (req, res) => {
     }
 });
 
+// Final plain-English pass for the Validation & Performance report.
+// Prompt instructions alone were not enough, so common technical phrases are rewritten
+// in the returned report when a saved validation summary is being analysed.
+function simplifyValidationLanguage(answer) {
+    const replacements = [
+        [/confidence calibration/gi, "making the percentages better match real results"],
+        [/calibration/gi, "adjusting the percentages to better match real results"],
+        [/success rate/gi, "how often we got it right"],
+        [/hit rate/gi, "how often we got it right"],
+        [/confidence buckets?/gi, "groups of predictions with similar chances"],
+        [/score buckets?/gi, "groups of matches with similar scores"],
+        [/hold[- ]out set/gi, "matches saved for a fair test"],
+        [/held[- ]out sample/gi, "matches saved for a fair test"],
+        [/validation set/gi, "matches used to check our predictions"],
+        [/expected goals/gi, "estimated goals"],
+        [/\bxG\b/gi, "estimated goals"],
+        [/under-estimation/gi, "predicting fewer goals than teams actually score"],
+        [/underestimation/gi, "predicting fewer goals than teams actually score"],
+        [/re-scale|rescale/gi, "adjust"],
+        [/raw scores/gi, "original prediction figures"],
+        [/score error/gi, "difference between predicted and actual scores"],
+        [/MAE\b/gi, "average difference between predicted and actual scores"],
+        [/\b1X2\b/g, "home win, draw or away win"],
+        [/model tweak/gi, "proposed change"],
+        [/model parameter/gi, "prediction setting"],
+        [/isotonic regression/gi, "a method for adjusting percentages"],
+        [/Brier score/gi, "a measure of how close the stated chances were to what happened"],
+        [/frequency/gi, "how often"],
+        [/holdout/gi, "fair test"],
+        [/probability outputs/gi, "chances shown as percentages"],
+        [/high-confidence predictions/gi, "predictions given a high chance of success"]
+    ];
+    let cleaned = String(answer || "");
+    for (const [pattern, replacement] of replacements) cleaned = cleaned.replace(pattern, replacement);
+    return cleaned;
+}
+
 app.post("/api/ai/analyze", async (req, res) => {
     const prompt = String(req.body && req.body.question || "").trim();
     const context = req.body && req.body.match && typeof req.body.match === "object"
@@ -3431,8 +3468,9 @@ app.post("/api/ai/analyze", async (req, res) => {
                 const result = await requestGroqAnswer(systemInstruction, userContent);
                 lastAiAnalysisFailure = null;
                 void logSystemEvent("ai_analysis_succeeded", "success", "AI analysis completed successfully.", { provider: "groq", model: result.model });
+                const finalAnswer = validationSummary ? simplifyValidationLanguage(result.answer) : result.answer;
                 return res.json({
-                    answer: result.answer,
+                    answer: finalAnswer,
                     provider: "groq",
                     model: result.model,
                     evidenceUsed: evidence
@@ -3496,7 +3534,8 @@ app.post("/api/ai/analyze", async (req, res) => {
                 return res.status(502).json({ error: "The AI analyst returned an empty answer." });
             }
             lastAiAnalysisFailure = null;
-            return res.json({ answer, provider: "openai", model, evidenceUsed: evidence });
+            const finalAnswer = validationSummary ? simplifyValidationLanguage(answer) : answer;
+            return res.json({ answer: finalAnswer, provider: "openai", model, evidenceUsed: evidence });
         }
 
         if (process.env.GROQ_API_KEY && groqFailureMessage) {
