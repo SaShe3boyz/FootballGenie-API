@@ -152,7 +152,7 @@ button{background:#087eaa;border:0;font-weight:700;margin-top:12px;cursor:pointe
 <div><label for="rtTitle">Test name</label><input id="rtTitle" maxlength="160" value="Goal estimate adjustment test"></div>
 <div><label for="rtHomeMultiplier">Home goal estimate multiplier</label><input id="rtHomeMultiplier" type="number" min="0.5" max="1.5" step="0.05" value="1.05"></div>
 <div><label for="rtAwayMultiplier">Away goal estimate multiplier</label><input id="rtAwayMultiplier" type="number" min="0.5" max="1.5" step="0.05" value="1.05"></div>
-<div><label for="rtRho">Low-score adjustment</label><input id="rtRho" type="number" min="-0.08" max="0.08" step="0.01" value="-0.08"></div>
+<div><label for="rtRho">Low-score adjustment</label><input id="rtRho" type="number" min="-0.08" max="0" step="0.01" value="-0.08"></div>
 </div>
 <label for="rtDescription">What are you testing?</label><textarea id="rtDescription" maxlength="2000" rows="2">Check whether a small adjustment to expected goals improves score estimates without damaging result predictions.</textarea>
 <button id="rtCreate">Save proposed test</button>
@@ -221,7 +221,7 @@ $("rtCreate").addEventListener("click",async function(){
  const title=$("rtTitle").value.trim(),description=$("rtDescription").value.trim();
  const candidateSettings={homeGoalMultiplier:Number($("rtHomeMultiplier").value),awayGoalMultiplier:Number($("rtAwayMultiplier").value),lowScoreRho:Number($("rtRho").value)};
  if(!title||!description){setRecommendationNotice("Enter a test name and description.",true);return}
- if(!Number.isFinite(candidateSettings.homeGoalMultiplier)||candidateSettings.homeGoalMultiplier<0.5||candidateSettings.homeGoalMultiplier>1.5||!Number.isFinite(candidateSettings.awayGoalMultiplier)||candidateSettings.awayGoalMultiplier<0.5||candidateSettings.awayGoalMultiplier>1.5||!Number.isFinite(candidateSettings.lowScoreRho)||candidateSettings.lowScoreRho< -0.08||candidateSettings.lowScoreRho>0.08){setRecommendationNotice("Check the supported setting ranges shown above.",true);return}
+ if(!Number.isFinite(candidateSettings.homeGoalMultiplier)||candidateSettings.homeGoalMultiplier<0.5||candidateSettings.homeGoalMultiplier>1.5||!Number.isFinite(candidateSettings.awayGoalMultiplier)||candidateSettings.awayGoalMultiplier<0.5||candidateSettings.awayGoalMultiplier>1.5||!Number.isFinite(candidateSettings.lowScoreRho)||candidateSettings.lowScoreRho< -0.08||candidateSettings.lowScoreRho>0){setRecommendationNotice("Check the supported setting ranges shown above.",true);return}
  try{const result=await api("/api/owner/recommendation-tests",{method:"POST",body:JSON.stringify({title:title,description:description,candidateSettings:candidateSettings})});setRecommendationNotice(result.message,false);await loadRecommendationTests()}catch(error){setRecommendationNotice(error.message,true)}
 });
 $("rtRefresh").addEventListener("click",loadRecommendationTests);
@@ -502,8 +502,8 @@ app.post("/api/owner/recommendation-tests", requireOwner, async (req, res) => {
     };
     if (!Number.isFinite(settings.homeGoalMultiplier) || settings.homeGoalMultiplier < 0.5 || settings.homeGoalMultiplier > 1.5 ||
         !Number.isFinite(settings.awayGoalMultiplier) || settings.awayGoalMultiplier < 0.5 || settings.awayGoalMultiplier > 1.5 ||
-        !Number.isFinite(settings.lowScoreRho) || settings.lowScoreRho < -0.08 || settings.lowScoreRho > 0.08) {
-        return res.status(400).json({ error: "Supported test settings: homeGoalMultiplier and awayGoalMultiplier from 0.5 to 1.5; lowScoreRho from -0.08 to 0.08." });
+        !Number.isFinite(settings.lowScoreRho) || settings.lowScoreRho < -0.08 || settings.lowScoreRho > 0) {
+        return res.status(400).json({ error: "Supported test settings: homeGoalMultiplier and awayGoalMultiplier from 0.5 to 1.5; lowScoreRho from -0.08 to 0." });
     }
     try {
         await recommendationTestingSchemaReady;
