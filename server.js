@@ -409,12 +409,19 @@ app.post("/api/owner/recommendation-tests", requireOwner, async (req, res) => {
     const body = req.body || {};
     const title = String(body.title || "").trim().slice(0, 160);
     const description = String(body.description || "").trim().slice(0, 2000);
-    const settings = body.candidateSettings;
-    if (!title || !description || !settings || typeof settings !== "object" || Array.isArray(settings)) {
+    const suppliedSettings = body.candidateSettings;
+    if (!title || !description || !suppliedSettings || typeof suppliedSettings !== "object" || Array.isArray(suppliedSettings)) {
         return res.status(400).json({ error: "title, description, and a candidateSettings object are required." });
     }
-    if (JSON.stringify(settings).length > 10000) {
-        return res.status(400).json({ error: "Candidate settings must be 10,000 characters or fewer." });
+    const settings = {
+        homeGoalMultiplier: Number(suppliedSettings.homeGoalMultiplier ?? 1),
+        awayGoalMultiplier: Number(suppliedSettings.awayGoalMultiplier ?? 1),
+        lowScoreRho: Number(suppliedSettings.lowScoreRho ?? -0.08)
+    };
+    if (!Number.isFinite(settings.homeGoalMultiplier) || settings.homeGoalMultiplier < 0.5 || settings.homeGoalMultiplier > 1.5 ||
+        !Number.isFinite(settings.awayGoalMultiplier) || settings.awayGoalMultiplier < 0.5 || settings.awayGoalMultiplier > 1.5 ||
+        !Number.isFinite(settings.lowScoreRho) || settings.lowScoreRho < -0.08 || settings.lowScoreRho > 0.08) {
+        return res.status(400).json({ error: "Supported test settings: homeGoalMultiplier and awayGoalMultiplier from 0.5 to 1.5; lowScoreRho from -0.08 to 0.08." });
     }
     try {
         await recommendationTestingSchemaReady;
@@ -449,61 +456,67 @@ app.post("/api/owner/recommendation-tests", requireOwner, async (req, res) => {
     }
 });
 
+// List eligible historical predictions so an owner can select a fair test set.
+app.get("/api/owner/recommendation-test-fixtures", requireOwner, async (req, res) => {
+    if (!dbPool) return res.status(503).json({ error: "Database is not configured." });
+    const requestedLimit = Number(req.query && req.query.limit || 100);
+    const limit = Number.isFinite(requestedLimit) ? Math.max(5, Math.min(150, Math.floor(requestedLimit))) : 100;
+    try {
+        await recommendationTestingSchemaReady;
+        const result = await dbPool.query(
+            `SELECT id, match_external_id, competition, home_team, away_team, kickoff_at,
+                    predicted_home_goals, predicted_away_goals, home_win_probability,
+                    draw_probability, away_win_probability, actual_home_goals, actual_away_goals
+             FROM prediction_history
+             WHERE prediction_status = 'evaluated'
+               AND actual_home_goals IS NOT NULL AND actual_away_goals IS NOT NULL
+               AND kickoff_at IS NOT NULL AND created_at <= kickoff_at
+               AND predicted_home_goals IS NOT NULL AND predicted_away_goals IS NOT NULL
+             ORDER BY kickoff_at DESC
+             LIMIT $1`,
+            [limit]
+        );
+        return res.json({
+            fixtures: result.rows,
+            count: result.rowCount,
+            minimumRecommendedForApproval: 30,
+            note: "Use each fixture only once. These are eligible records saved before kickoff; a fair test must not use fixtures that helped design the candidate."
+        });
+    } catch (error) {
+        console.error("Recommendation test fixtures failed:", error.message);
+        return res.status(503).json({ error: "Unable to load eligible test fixtures." });
+    }
+});
+
 app.post("/api/owner/recommendation-tests/:id/evaluate", requireOwner, async (req, res) => {
     if (!dbPool) return res.status(503).json({ error: "Database is not configured." });
     const id = Number(req.params.id);
     const body = req.body || {};
-    const rows = body.candidatePredictions;
+    const ids = body.predictionIds;
     if (!Number.isSafeInteger(id) || id <= 0) {
         return res.status(400).json({ error: "A valid recommendation test ID is required." });
     }
-    if (!Array.isArray(rows) || rows.length < 5 || rows.length > 150) {
-        return res.status(400).json({ error: "Provide candidate predictions for 5 to 150 different completed fixtures." });
+    if (!Array.isArray(ids) || ids.length < 5 || ids.length > 150) {
+        return res.status(400).json({ error: "Provide 5 to 150 different completed fixture prediction IDs." });
     }
     if (body.unseenTestSetConfirmed !== true) {
         return res.status(400).json({
-            error: "Confirm unseenTestSetConfirmed=true only if these fixtures were not used to design the candidate and candidate predictions were made without seeing final scores."
+            error: "Confirm unseenTestSetConfirmed=true only if these fixtures were not used to design the candidate."
         });
     }
-    const ids = [];
-    const seenIds = new Set();
-    for (const row of rows) {
-        const predictionId = Number(row && row.predictionId);
-        const homeRaw = row && row.candidateHomeGoals;
-        const awayRaw = row && row.candidateAwayGoals;
-        const homeGoals = Number(homeRaw);
-        const awayGoals = Number(awayRaw);
-        if (homeRaw === undefined || homeRaw === null || homeRaw === "" ||
-            awayRaw === undefined || awayRaw === null || awayRaw === "") {
-            return res.status(400).json({ error: "Every candidate row must include both candidate goal estimates." });
+    const uniqueIds = new Set();
+    for (const rawId of ids) {
+        const predictionId = Number(rawId);
+        if (!Number.isSafeInteger(predictionId) || predictionId <= 0 || uniqueIds.has(predictionId)) {
+            return res.status(400).json({ error: "Each selected prediction ID must be valid and unique." });
         }
-        if (!Number.isSafeInteger(predictionId) || predictionId <= 0 || seenIds.has(predictionId)) {
-            return res.status(400).json({ error: "Each candidate row needs a unique, valid predictionId." });
-        }
-        if (!Number.isFinite(homeGoals) || !Number.isFinite(awayGoals) ||
-            homeGoals < 0 || homeGoals > 20 || awayGoals < 0 || awayGoals > 20) {
-            return res.status(400).json({ error: "Candidate goal estimates must be between 0 and 20." });
-        }
-        const probabilityFields = ["homeWinProbability", "drawProbability", "awayWinProbability"];
-        const suppliedProbabilities = probabilityFields.filter(field => row[field] !== undefined && row[field] !== null && row[field] !== "");
-        if (suppliedProbabilities.length > 0 && suppliedProbabilities.length !== 3) {
-            return res.status(400).json({ error: "Provide all three result chances together: home win, draw, and away win." });
-        }
-        if (suppliedProbabilities.length === 3) {
-            const probabilities = probabilityFields.map(field => Number(row[field]));
-            if (probabilities.some(value => !Number.isFinite(value) || value < 0 || value > 100) ||
-                Math.abs(probabilities.reduce((sum, value) => sum + value, 0) - 100) > 3) {
-                return res.status(400).json({ error: "Result chances must each be between 0 and 100 and add up to about 100%." });
-            }
-        }
-        seenIds.add(predictionId);
-        ids.push(predictionId);
+        uniqueIds.add(predictionId);
     }
 
     try {
         await recommendationTestingSchemaReady;
         const proposalResult = await dbPool.query(
-            "SELECT id, title, candidate_version, baseline_version, status FROM recommendation_tests WHERE id = $1",
+            "SELECT id, title, candidate_settings, candidate_version, baseline_version, status FROM recommendation_tests WHERE id = $1",
             [id]
         );
         if (!proposalResult.rowCount) return res.status(404).json({ error: "Recommendation test not found." });
@@ -511,6 +524,10 @@ app.post("/api/owner/recommendation-tests/:id/evaluate", requireOwner, async (re
         if (["rejected", "rolled_back", "approved_pending_release"].includes(proposal.status)) {
             return res.status(409).json({ error: "This proposal is closed for further testing." });
         }
+        const settings = proposal.candidate_settings || {};
+        const homeMultiplier = Number(settings.homeGoalMultiplier ?? 1);
+        const awayMultiplier = Number(settings.awayGoalMultiplier ?? 1);
+        const rho = Number(settings.lowScoreRho ?? -0.08);
 
         const historyResult = await dbPool.query(
             `SELECT id, match_external_id, competition, home_team, away_team, kickoff_at, created_at,
@@ -523,50 +540,84 @@ app.post("/api/owner/recommendation-tests/:id/evaluate", requireOwner, async (re
                AND kickoff_at IS NOT NULL AND created_at <= kickoff_at
                AND predicted_home_goals IS NOT NULL AND predicted_away_goals IS NOT NULL
              ORDER BY kickoff_at ASC`,
-            [ids]
+            [Array.from(uniqueIds)]
         );
         const byId = new Map(historyResult.rows.map(row => [String(row.id), row]));
-        if (byId.size !== ids.length) {
+        if (byId.size !== uniqueIds.size) {
             return res.status(400).json({
-                error: "Some selected predictions are missing, not evaluated, have no kickoff time, were saved after kickoff, or have no original goal estimates. Use only complete predictions saved before kickoff."
+                error: "Some selected predictions are missing, not evaluated, were saved after kickoff, or have no original goal estimates. Use only complete predictions saved before kickoff."
             });
         }
-        const usedFixtures = new Set();
+
+        const poissonProbability = (goals, lambda) => {
+            let probability = Math.exp(-lambda);
+            for (let i = 1; i <= goals; i++) probability *= lambda / i;
+            return probability;
+        };
+        const correction = (home, away, homeGoals, awayGoals) => {
+            if (homeGoals === 0 && awayGoals === 0) return 1 - home * away * rho;
+            if (homeGoals === 0 && awayGoals === 1) return 1 + home * rho;
+            if (homeGoals === 1 && awayGoals === 0) return 1 + away * rho;
+            if (homeGoals === 1 && awayGoals === 1) return 1 - rho;
+            return 1;
+        };
+        const distributionFor = (home, away) => {
+            let homeWin = 0, draw = 0, awayWin = 0, total = 0;
+            for (let h = 0; h <= 18; h++) {
+                const homeP = poissonProbability(h, home);
+                for (let a = 0; a <= 18; a++) {
+                    const p = homeP * poissonProbability(a, away) * correction(home, away, h, a);
+                    total += p;
+                    if (h > a) homeWin += p;
+                    else if (h === a) draw += p;
+                    else awayWin += p;
+                }
+            }
+            if (total > 0) return [homeWin / total, draw / total, awayWin / total];
+            return [1 / 3, 1 / 3, 1 / 3];
+        };
+        const pickResult = chances => chances[0] >= chances[1] && chances[0] >= chances[2]
+            ? "home" : chances[1] >= chances[2] ? "draw" : "away";
+        const resultForScore = (home, away) => home > away ? "home" : home < away ? "away" : "draw";
         const sample = [];
-        for (const candidate of rows) {
-            const saved = byId.get(String(Number(candidate.predictionId)));
+        const usedFixtures = new Set();
+
+        for (const saved of historyResult.rows) {
             const fixtureKey = saved.match_external_id
                 ? String(saved.match_external_id)
                 : [saved.kickoff_at, saved.home_team, saved.away_team].join("|").toLowerCase();
             if (usedFixtures.has(fixtureKey)) {
-                return res.status(400).json({ error: "The test contains the same fixture more than once. Each match can be counted only once." });
+                return res.status(400).json({ error: "The selected test set contains the same fixture more than once. Each match can count only once." });
             }
             usedFixtures.add(fixtureKey);
+
             const actualHome = Number(saved.actual_home_goals);
             const actualAway = Number(saved.actual_away_goals);
             const baselineHome = Number(saved.predicted_home_goals);
             const baselineAway = Number(saved.predicted_away_goals);
-            const candidateHome = Number(candidate.candidateHomeGoals);
-            const candidateAway = Number(candidate.candidateAwayGoals);
-            const resultFor = (home, away) => home > away ? "home" : home < away ? "away" : "draw";
-            const actualResult = resultFor(actualHome, actualAway);
-            const baselineCorrect = resultFor(baselineHome, baselineAway) === actualResult;
-            const candidateCorrect = resultFor(candidateHome, candidateAway) === actualResult;
-            const resultHasProbabilities = candidate.homeWinProbability !== undefined &&
-                candidate.homeWinProbability !== null && candidate.homeWinProbability !== "" &&
-                candidate.drawProbability !== undefined && candidate.drawProbability !== null &&
-                candidate.drawProbability !== "" && candidate.awayWinProbability !== undefined &&
-                candidate.awayWinProbability !== null && candidate.awayWinProbability !== "";
-            let candidateBrier = null;
-            let baselineBrier = null;
-            if (resultHasProbabilities &&
-                saved.home_win_probability !== null && saved.draw_probability !== null && saved.away_win_probability !== null) {
-                const actualVector = [actualResult === "home" ? 100 : 0, actualResult === "draw" ? 100 : 0, actualResult === "away" ? 100 : 0];
-                const baselineVector = [Number(saved.home_win_probability), Number(saved.draw_probability), Number(saved.away_win_probability)];
-                const candidateVector = [Number(candidate.homeWinProbability), Number(candidate.drawProbability), Number(candidate.awayWinProbability)];
-                baselineBrier = baselineVector.reduce((sum, value, index) => sum + Math.pow(value / 100 - actualVector[index] / 100, 2), 0);
-                candidateBrier = candidateVector.reduce((sum, value, index) => sum + Math.pow(value / 100 - actualVector[index] / 100, 2), 0);
+            const candidateHome = baselineHome * homeMultiplier;
+            const candidateAway = baselineAway * awayMultiplier;
+            if (candidateHome > 8 || candidateAway > 8) {
+                return res.status(400).json({
+                    error: "These settings push at least one goal estimate above 8. Reduce the multiplier and test again."
+                });
             }
+            const actualResult = resultForScore(actualHome, actualAway);
+            const baselineHasChances = saved.home_win_probability !== null &&
+                saved.draw_probability !== null && saved.away_win_probability !== null;
+            const baselineChances = baselineHasChances
+                ? [Number(saved.home_win_probability), Number(saved.draw_probability), Number(saved.away_win_probability)]
+                    .map(value => value / 100)
+                : distributionFor(baselineHome, baselineAway);
+            const candidateChances = distributionFor(candidateHome, candidateAway);
+            const baselinePick = pickResult(baselineChances);
+            const candidatePick = pickResult(candidateChances);
+            const actualVector = [actualResult === "home" ? 1 : 0, actualResult === "draw" ? 1 : 0, actualResult === "away" ? 1 : 0];
+            const baselineBrier = baselineHasChances
+                ? baselineChances.reduce((sum, value, index) => sum + Math.pow(value - actualVector[index], 2), 0)
+                : null;
+            const candidateBrier = candidateChances.reduce((sum, value, index) => sum + Math.pow(value - actualVector[index], 2), 0);
+
             sample.push({
                 predictionId: Number(saved.id),
                 fixture: saved.home_team + " vs " + saved.away_team,
@@ -574,16 +625,18 @@ app.post("/api/owner/recommendation-tests/:id/evaluate", requireOwner, async (re
                 kickoffAt: saved.kickoff_at,
                 actualHomeGoals: actualHome,
                 actualAwayGoals: actualAway,
-                baselineHomeGoals: baselineHome,
-                baselineAwayGoals: baselineAway,
-                candidateHomeGoals: candidateHome,
-                candidateAwayGoals: candidateAway,
+                baselineHomeGoals: Number(baselineHome.toFixed(3)),
+                baselineAwayGoals: Number(baselineAway.toFixed(3)),
+                candidateHomeGoals: Number(candidateHome.toFixed(3)),
+                candidateAwayGoals: Number(candidateAway.toFixed(3)),
                 baselineHomeError: Math.abs(baselineHome - actualHome),
                 baselineAwayError: Math.abs(baselineAway - actualAway),
                 candidateHomeError: Math.abs(candidateHome - actualHome),
                 candidateAwayError: Math.abs(candidateAway - actualAway),
-                baselineResultCorrect: baselineCorrect,
-                candidateResultCorrect: candidateCorrect,
+                baselineResultCorrect: baselinePick === actualResult,
+                candidateResultCorrect: candidatePick === actualResult,
+                baselineResultChances: baselineChances.map(value => Number((value * 100).toFixed(2))),
+                candidateResultChances: candidateChances.map(value => Number((value * 100).toFixed(2))),
                 baselineBrier,
                 candidateBrier
             });
@@ -599,13 +652,14 @@ app.post("/api/owner/recommendation-tests/:id/evaluate", requireOwner, async (re
         const candidateGoalMae = (candidateHomeMae + candidateAwayMae) / 2;
         const baselineResultAccuracy = average(sample.map(item => item.baselineResultCorrect ? 1 : 0));
         const candidateResultAccuracy = average(sample.map(item => item.candidateResultCorrect ? 1 : 0));
-        const brierRows = sample.filter(item => item.baselineBrier !== null && item.candidateBrier !== null);
-        const baselineBrier = brierRows.length ? brierRows.reduce((sum, item) => sum + item.baselineBrier, 0) / brierRows.length : null;
-        const candidateBrier = brierRows.length ? brierRows.reduce((sum, item) => sum + item.candidateBrier, 0) / brierRows.length : null;
+        const baselineBrierRows = sample.filter(item => item.baselineBrier !== null);
+        const baselineBrier = baselineBrierRows.length
+            ? baselineBrierRows.reduce((sum, item) => sum + item.baselineBrier, 0) / baselineBrierRows.length : null;
+        const candidateBrier = average(sample.map(item => item.candidateBrier));
         const enoughMatches = count >= 30;
         const goalImprovement = baselineGoalMae - candidateGoalMae;
         const resultDrop = baselineResultAccuracy - candidateResultAccuracy;
-        const brierImprovement = baselineBrier !== null && candidateBrier !== null ? baselineBrier - candidateBrier : null;
+        const brierImprovement = baselineBrier !== null ? baselineBrier - candidateBrier : null;
         const candidateBetter = enoughMatches &&
             ((goalImprovement >= 0.05 && resultDrop <= 0.05) ||
              (brierImprovement !== null && brierImprovement >= 0.01 && resultDrop <= 0.05));
@@ -616,6 +670,7 @@ app.post("/api/owner/recommendation-tests/:id/evaluate", requireOwner, async (re
         const metrics = {
             sampleSize: count,
             minimumRecommendedMatches: 30,
+            candidateSettings: { homeGoalMultiplier: homeMultiplier, awayGoalMultiplier: awayMultiplier, lowScoreRho: rho },
             baseline: {
                 averageHomeGoalDifference: Number(baselineHomeMae.toFixed(4)),
                 averageAwayGoalDifference: Number(baselineAwayMae.toFixed(4)),
@@ -628,14 +683,14 @@ app.post("/api/owner/recommendation-tests/:id/evaluate", requireOwner, async (re
                 averageAwayGoalDifference: Number(candidateAwayMae.toFixed(4)),
                 averageGoalDifference: Number(candidateGoalMae.toFixed(4)),
                 correctResultPickPercent: Number((candidateResultAccuracy * 100).toFixed(2)),
-                averageResultChanceError: candidateBrier === null ? null : Number(candidateBrier.toFixed(5))
+                averageResultChanceError: Number(candidateBrier.toFixed(5))
             },
             change: {
                 goalDifferenceImprovement: Number(goalImprovement.toFixed(4)),
                 correctResultPickChangePercentagePoints: Number(((candidateResultAccuracy - baselineResultAccuracy) * 100).toFixed(2)),
                 resultChanceErrorImprovement: brierImprovement === null ? null : Number(brierImprovement.toFixed(5))
             },
-            testSetDeclaration: "Owner confirmed the candidate was designed without using these test fixtures and candidate predictions were made without seeing final scores.",
+            testSetDeclaration: "Owner confirmed these fixtures were not used to design the candidate settings.",
             decisionGuidance: !enoughMatches
                 ? "Too few matches to approve this change. Collect at least 30 different completed fixtures and repeat a fair test."
                 : candidateBetter
@@ -647,16 +702,16 @@ app.post("/api/owner/recommendation-tests/:id/evaluate", requireOwner, async (re
             `UPDATE recommendation_tests
              SET status = $1, sample_size = $2, metrics = $3::jsonb, tested_at = NOW()
              WHERE id = $4
-             RETURNING id, title, candidate_version, baseline_version, status, sample_size, metrics, tested_at`,
+             RETURNING id, title, candidate_settings, candidate_version, baseline_version, status, sample_size, metrics, tested_at`,
             [status, count, JSON.stringify(metrics), id]
         );
-        void logSystemEvent("recommendation_test_evaluated", "info", "A candidate prediction approach was compared with the baseline on saved completed fixtures.", {
+        void logSystemEvent("recommendation_test_evaluated", "info", "A candidate configuration was compared with the baseline on saved completed fixtures.", {
             testId: id, candidateVersion: proposal.candidate_version, sampleSize: count, status
         });
         return res.json({
             test: savedTest.rows[0],
             runtimeApplied: false,
-            message: "This is a recorded historical comparison. It does not change live predictions."
+            message: "This historical comparison evaluates the proposed settings against saved results. It does not change live predictions."
         });
     } catch (error) {
         console.error("Evaluating recommendation test failed:", error.message);
