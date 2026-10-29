@@ -486,7 +486,6 @@ app.post("/api/owner/recommendation-tests/:id/evaluate", requireOwner, async (re
         }
         const probabilityFields = ["homeWinProbability", "drawProbability", "awayWinProbability"];
         const suppliedProbabilities = probabilityFields.filter(field => row[field] !== undefined && row[field] !== null && row[field] !== "");
-        const probabilityFieldsPresent = probabilityFields.every(field => row[field] !== undefined && row[field] !== null && row[field] !== "");
         if (suppliedProbabilities.length > 0 && suppliedProbabilities.length !== 3) {
             return res.status(400).json({ error: "Provide all three result chances together: home win, draw, and away win." });
         }
