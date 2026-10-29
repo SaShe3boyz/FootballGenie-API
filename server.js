@@ -313,8 +313,6 @@ const recommendationTestingSchemaReady = dbPool
             VALUES ('prediction_model', 'baseline-v1', FALSE, 'Baseline version; no candidate has been approved.')
             ON CONFLICT (state_key) DO NOTHING
         `))
-        .then(() => dbPool.query("ALTER TABLE prediction_history ADD COLUMN IF NOT EXISTS predicted_home_xg DOUBLE PRECISION"))
-        .then(() => dbPool.query("ALTER TABLE prediction_history ADD COLUMN IF NOT EXISTS predicted_away_xg DOUBLE PRECISION"))
         .catch(error => {
             console.error("Recommendation testing schema migration failed:", error.message);
             throw error;
@@ -545,6 +543,7 @@ app.get("/api/owner/recommendation-test-fixtures", requireOwner, async (req, res
     const limit = Number.isFinite(requestedLimit) ? Math.max(5, Math.min(150, Math.floor(requestedLimit))) : 100;
     try {
         await recommendationTestingSchemaReady;
+        await predictionSchemaReady;
         const result = await dbPool.query(
             `SELECT * FROM (
                 SELECT DISTINCT ON (
@@ -606,6 +605,7 @@ app.post("/api/owner/recommendation-tests/:id/evaluate", requireOwner, async (re
 
     try {
         await recommendationTestingSchemaReady;
+        await predictionSchemaReady;
         const proposalResult = await dbPool.query(
             "SELECT id, title, candidate_settings, candidate_version, baseline_version, status FROM recommendation_tests WHERE id = $1",
             [id]
