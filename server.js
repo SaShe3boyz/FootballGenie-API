@@ -264,6 +264,8 @@ app.get("/api/health/database", async (req, res) => {
 // The Android app supplies a stable anonymous client ID until account sign-in is introduced.
 const predictionSchemaReady = dbPool
     ? dbPool.query("ALTER TABLE prediction_history ADD COLUMN IF NOT EXISTS client_id TEXT")
+        .then(() => dbPool.query("ALTER TABLE prediction_history ADD COLUMN IF NOT EXISTS predicted_home_xg DOUBLE PRECISION"))
+        .then(() => dbPool.query("ALTER TABLE prediction_history ADD COLUMN IF NOT EXISTS predicted_away_xg DOUBLE PRECISION"))
         .then(() => dbPool.query("DROP INDEX IF EXISTS idx_prediction_history_external_unique"))
         .then(() => dbPool.query("CREATE INDEX IF NOT EXISTS idx_prediction_history_external_idx ON prediction_history (match_external_id)"))
         .then(() => dbPool.query("CREATE INDEX IF NOT EXISTS idx_prediction_history_client_idx ON prediction_history (client_id)"))
@@ -311,6 +313,8 @@ const recommendationTestingSchemaReady = dbPool
             VALUES ('prediction_model', 'baseline-v1', FALSE, 'Baseline version; no candidate has been approved.')
             ON CONFLICT (state_key) DO NOTHING
         `))
+        .then(() => dbPool.query("ALTER TABLE prediction_history ADD COLUMN IF NOT EXISTS predicted_home_xg DOUBLE PRECISION"))
+        .then(() => dbPool.query("ALTER TABLE prediction_history ADD COLUMN IF NOT EXISTS predicted_away_xg DOUBLE PRECISION"))
         .catch(error => {
             console.error("Recommendation testing schema migration failed:", error.message);
             throw error;
@@ -350,6 +354,8 @@ app.post("/api/predictions", async (req, res) => {
     const values = {
         predictedHomeGoals: readOptionalNumber(body.predictedHomeGoals ?? body.predicted_home_goals, 0, 20),
         predictedAwayGoals: readOptionalNumber(body.predictedAwayGoals ?? body.predicted_away_goals, 0, 20),
+        predictedHomeXg: readOptionalNumber(body.homeXg ?? body.predictedHomeXg ?? body.predicted_home_xg, 0, 8),
+        predictedAwayXg: readOptionalNumber(body.awayXg ?? body.predictedAwayXg ?? body.predicted_away_xg, 0, 8),
         homeWinProbability: readOptionalNumber(body.homeWinProbability ?? body.home_win_probability, 0, 100),
         drawProbability: readOptionalNumber(body.drawProbability ?? body.draw_probability, 0, 100),
         awayWinProbability: readOptionalNumber(body.awayWinProbability ?? body.away_win_probability, 0, 100),
@@ -358,7 +364,7 @@ app.post("/api/predictions", async (req, res) => {
         bttsProbability: readOptionalNumber(body.bttsProbability ?? body.btts_probability, 0, 100)
     };
     if (Object.values(values).some(value => Number.isNaN(value))) {
-        return res.status(400).json({ error: "Goal estimates must be between 0 and 20; probabilities must be between 0 and 100." });
+        return res.status(400).json({ error: "Predicted scoreline goals must be between 0 and 20, expected goals between 0 and 8, and probabilities between 0 and 100." });
     }
 
     try {
@@ -366,15 +372,16 @@ app.post("/api/predictions", async (req, res) => {
         const saved = await dbPool.query(
             `INSERT INTO prediction_history (
                 match_external_id, client_id, competition, home_team, away_team, kickoff_at,
-                predicted_home_goals, predicted_away_goals,
+                predicted_home_goals, predicted_away_goals, predicted_home_xg, predicted_away_xg,
                 home_win_probability, draw_probability, away_win_probability,
                 over_25_probability, under_25_probability, btts_probability,
                 source, notes
-            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'android_app',$15)
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,'android_app',$17)
             RETURNING id, prediction_status, created_at`,
             [
                 matchExternalId, clientId, competition, homeTeam, awayTeam, kickoffAt,
                 values.predictedHomeGoals, values.predictedAwayGoals,
+                values.predictedHomeXg, values.predictedAwayXg,
                 values.homeWinProbability, values.drawProbability, values.awayWinProbability,
                 values.over25Probability, values.under25Probability, values.bttsProbability,
                 String(body.notes || "").slice(0, 1000) || null
@@ -401,7 +408,7 @@ app.get("/api/owner/predictions", requireOwner, async (req, res) => {
     try {
         const result = await dbPool.query(
             `SELECT id, match_external_id, competition, home_team, away_team, kickoff_at,
-                    predicted_home_goals, predicted_away_goals,
+                    predicted_home_goals, predicted_away_goals, predicted_home_xg, predicted_away_xg,
                     home_win_probability, draw_probability, away_win_probability,
                     over_25_probability, under_25_probability, btts_probability,
                     actual_home_goals, actual_away_goals, prediction_status,
