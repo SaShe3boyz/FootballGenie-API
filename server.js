@@ -469,8 +469,14 @@ app.post("/api/owner/recommendation-tests/:id/evaluate", requireOwner, async (re
     const seenIds = new Set();
     for (const row of rows) {
         const predictionId = Number(row && row.predictionId);
-        const homeGoals = Number(row && row.candidateHomeGoals);
-        const awayGoals = Number(row && row.candidateAwayGoals);
+        const homeRaw = row && row.candidateHomeGoals;
+        const awayRaw = row && row.candidateAwayGoals;
+        const homeGoals = Number(homeRaw);
+        const awayGoals = Number(awayRaw);
+        if (homeRaw === undefined || homeRaw === null || homeRaw === "" ||
+            awayRaw === undefined || awayRaw === null || awayRaw === "") {
+            return res.status(400).json({ error: "Every candidate row must include both candidate goal estimates." });
+        }
         if (!Number.isSafeInteger(predictionId) || predictionId <= 0 || seenIds.has(predictionId)) {
             return res.status(400).json({ error: "Each candidate row needs a unique, valid predictionId." });
         }
@@ -480,6 +486,7 @@ app.post("/api/owner/recommendation-tests/:id/evaluate", requireOwner, async (re
         }
         const probabilityFields = ["homeWinProbability", "drawProbability", "awayWinProbability"];
         const suppliedProbabilities = probabilityFields.filter(field => row[field] !== undefined && row[field] !== null && row[field] !== "");
+        const probabilityFieldsPresent = probabilityFields.every(field => row[field] !== undefined && row[field] !== null && row[field] !== "");
         if (suppliedProbabilities.length > 0 && suppliedProbabilities.length !== 3) {
             return res.status(400).json({ error: "Provide all three result chances together: home win, draw, and away win." });
         }
@@ -547,9 +554,10 @@ app.post("/api/owner/recommendation-tests/:id/evaluate", requireOwner, async (re
             const baselineCorrect = resultFor(baselineHome, baselineAway) === actualResult;
             const candidateCorrect = resultFor(candidateHome, candidateAway) === actualResult;
             const resultHasProbabilities = candidate.homeWinProbability !== undefined &&
-                candidate.homeWinProbability !== null && candidate.drawProbability !== undefined &&
-                candidate.drawProbability !== null && candidate.awayWinProbability !== undefined &&
-                candidate.awayWinProbability !== null;
+                candidate.homeWinProbability !== null && candidate.homeWinProbability !== "" &&
+                candidate.drawProbability !== undefined && candidate.drawProbability !== null &&
+                candidate.drawProbability !== "" && candidate.awayWinProbability !== undefined &&
+                candidate.awayWinProbability !== null && candidate.awayWinProbability !== "";
             let candidateBrier = null;
             let baselineBrier = null;
             if (resultHasProbabilities &&
