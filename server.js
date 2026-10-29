@@ -357,6 +357,16 @@ const recommendationTestingSchemaReady = dbPool
                 UNIQUE (test_id, prediction_id)
             )
         `))
+        .then(() => dbPool.query(`
+            CREATE TABLE IF NOT EXISTS prediction_bet_slips (
+                prediction_id BIGINT PRIMARY KEY REFERENCES prediction_history(id) ON DELETE CASCADE,
+                market VARCHAR(40),
+                selection VARCHAR(80),
+                confidence NUMERIC(5,2),
+                threshold_percent NUMERIC(5,2) NOT NULL DEFAULT 70,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        `))
         .catch(error => {
             console.error("Recommendation testing schema migration failed:", error.message);
             throw error;
@@ -410,30 +420,49 @@ app.post("/api/predictions", async (req, res) => {
     }
 
     try {
-        await predictionSchemaReady;
-        const saved = await dbPool.query(
-            `INSERT INTO prediction_history (
-                match_external_id, client_id, competition, home_team, away_team, kickoff_at,
-                predicted_home_goals, predicted_away_goals, predicted_home_xg, predicted_away_xg,
-                home_win_probability, draw_probability, away_win_probability,
-                over_25_probability, under_25_probability, btts_probability,
-                source, notes
-            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,'android_app',$17)
-            RETURNING id, prediction_status, created_at`,
-            [
-                matchExternalId, clientId, competition, homeTeam, awayTeam, kickoffAt,
-                values.predictedHomeGoals, values.predictedAwayGoals,
-                values.predictedHomeXg, values.predictedAwayXg,
-                values.homeWinProbability, values.drawProbability, values.awayWinProbability,
-                values.over25Probability, values.under25Probability, values.bttsProbability,
-                String(body.notes || "").slice(0, 1000) || null
-            ]
-        );
-        const prediction = saved.rows[0];
-        void logSystemEvent("prediction_saved", "success", "A prediction was saved to prediction history.", {
-            predictionId: prediction.id, clientId, homeTeam, awayTeam, competition
+        await Promise.all([predictionSchemaReady, recommendationTestingSchemaReady]);
+        const client = await dbPool.connect();
+        let prediction;
+        const frozenBetSlip = selectHighConfidenceMarket(values);
+        try {
+            await client.query("BEGIN");
+            const saved = await client.query(
+                `INSERT INTO prediction_history (
+                    match_external_id, client_id, competition, home_team, away_team, kickoff_at,
+                    predicted_home_goals, predicted_away_goals, predicted_home_xg, predicted_away_xg,
+                    home_win_probability, draw_probability, away_win_probability,
+                    over_25_probability, under_25_probability, btts_probability,
+                    source, notes
+                ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,'android_app',$17)
+                RETURNING id, prediction_status, created_at`,
+                [
+                    matchExternalId, clientId, competition, homeTeam, awayTeam, kickoffAt,
+                    values.predictedHomeGoals, values.predictedAwayGoals,
+                    values.predictedHomeXg, values.predictedAwayXg,
+                    values.homeWinProbability, values.drawProbability, values.awayWinProbability,
+                    values.over25Probability, values.under25Probability, values.bttsProbability,
+                    String(body.notes || "").slice(0, 1000) || null
+                ]
+            );
+            prediction = saved.rows[0];
+            await client.query(
+                `INSERT INTO prediction_bet_slips
+                    (prediction_id, market, selection, confidence, threshold_percent)
+                 VALUES ($1,$2,$3,$4,70)`,
+                [prediction.id, frozenBetSlip.market, frozenBetSlip.selection, frozenBetSlip.confidence]
+            );
+            await client.query("COMMIT");
+        } catch (transactionError) {
+            await client.query("ROLLBACK").catch(() => {});
+            throw transactionError;
+        } finally {
+            client.release();
+        }
+        void logSystemEvent("prediction_saved", "success", "A prediction and its pre-kickoff bet slip snapshot were saved.", {
+            predictionId: prediction.id, clientId, homeTeam, awayTeam, competition,
+            betSlipSelection: frozenBetSlip.selection, betSlipConfidence: frozenBetSlip.confidence
         });
-        return res.status(201).json({ status: "saved", prediction });
+        return res.status(201).json({ status: "saved", prediction, betSlip: frozenBetSlip });
     } catch (error) {
         if (error && error.code === "23505") {
             return res.status(409).json({ error: "You have already saved a prediction for this fixture." });
@@ -501,8 +530,9 @@ app.post("/api/owner/predictions/:id/result", requireOwner, async (req, res) => 
     }
 });
 
-function chooseHighConfidenceBet(saved, actualHomeGoals, actualAwayGoals) {
+function selectHighConfidenceMarket(saved) {
     const candidates = [];
+    const read = (snake, camel) => saved[snake] !== undefined ? saved[snake] : saved[camel];
     const add = (market, selection, rawConfidence) => {
         if (rawConfidence === null || rawConfidence === undefined || rawConfidence === "") return;
         const confidence = Number(rawConfidence);
@@ -510,13 +540,14 @@ function chooseHighConfidenceBet(saved, actualHomeGoals, actualAwayGoals) {
             candidates.push({ market, selection, confidence: Number(confidence.toFixed(2)) });
         }
     };
-    add("Match Result", "Home Win", saved.home_win_probability);
-    add("Match Result", "Draw", saved.draw_probability);
-    add("Match Result", "Away Win", saved.away_win_probability);
-    add("Goals 2.5", "Over 2.5 Goals", saved.over_25_probability);
-    add("Goals 2.5", "Under 2.5 Goals", saved.under_25_probability);
-    if (saved.btts_probability !== null && saved.btts_probability !== undefined && saved.btts_probability !== "") {
-        const btts = Number(saved.btts_probability);
+    add("Match Result", "Home Win", read("home_win_probability", "homeWinProbability"));
+    add("Match Result", "Draw", read("draw_probability", "drawProbability"));
+    add("Match Result", "Away Win", read("away_win_probability", "awayWinProbability"));
+    add("Goals 2.5", "Over 2.5 Goals", read("over_25_probability", "over25Probability"));
+    add("Goals 2.5", "Under 2.5 Goals", read("under_25_probability", "under25Probability"));
+    const rawBtts = read("btts_probability", "bttsProbability");
+    if (rawBtts !== null && rawBtts !== undefined && rawBtts !== "") {
+        const btts = Number(rawBtts);
         if (Number.isFinite(btts) && btts >= 0 && btts <= 100) {
             add("Both Teams to Score", "Yes", btts);
             add("Both Teams to Score", "No", 100 - btts);
@@ -525,22 +556,29 @@ function chooseHighConfidenceBet(saved, actualHomeGoals, actualAwayGoals) {
     candidates.sort((a, b) => b.confidence - a.confidence);
     const best = candidates[0];
     if (!best || best.confidence < 70) {
+        return { market: null, selection: null, confidence: null, thresholdPercent: 70 };
+    }
+    return { market: best.market, selection: best.selection, confidence: best.confidence, thresholdPercent: 70 };
+}
+
+function scoreFrozenBetSlip(frozen, actualHomeGoals, actualAwayGoals) {
+    if (!frozen || !frozen.selection) {
         return { market: null, selection: null, confidence: null, status: "no_selection" };
     }
     let actualSelection;
-    if (best.market === "Match Result") {
+    if (frozen.market === "Match Result") {
         actualSelection = actualHomeGoals > actualAwayGoals ? "Home Win"
             : actualHomeGoals === actualAwayGoals ? "Draw" : "Away Win";
-    } else if (best.market === "Goals 2.5") {
+    } else if (frozen.market === "Goals 2.5") {
         actualSelection = actualHomeGoals + actualAwayGoals > 2.5 ? "Over 2.5 Goals" : "Under 2.5 Goals";
     } else {
         actualSelection = actualHomeGoals > 0 && actualAwayGoals > 0 ? "Yes" : "No";
     }
     return {
-        market: best.market,
-        selection: best.selection,
-        confidence: best.confidence,
-        status: best.selection === actualSelection ? "won" : "lost"
+        market: frozen.market,
+        selection: frozen.selection,
+        confidence: Number(frozen.confidence),
+        status: frozen.selection === actualSelection ? "won" : "lost"
     };
 }
 
@@ -646,6 +684,10 @@ app.get("/api/owner/recommendation-test-fixtures", requireOwner, async (req, res
                   AND kickoff_at IS NOT NULL AND created_at <= kickoff_at
                   AND predicted_home_goals IS NOT NULL AND predicted_away_goals IS NOT NULL
                   AND predicted_home_xg IS NOT NULL AND predicted_away_xg IS NOT NULL
+                  AND EXISTS (
+                      SELECT 1 FROM prediction_bet_slips saved_slip
+                      WHERE saved_slip.prediction_id = prediction_history.id
+                  )
                 ORDER BY COALESCE(NULLIF(match_external_id, ''), lower(home_team) || '|' || lower(away_team) || '|' || kickoff_at::text),
                          created_at ASC
             ) eligible_fixtures
@@ -657,7 +699,7 @@ app.get("/api/owner/recommendation-test-fixtures", requireOwner, async (req, res
             fixtures: result.rows,
             count: result.rowCount,
             minimumRecommendedForApproval: 30,
-            note: "Use each fixture only once. These are eligible records saved before kickoff; a fair test must not use fixtures that helped design the candidate."
+            note: "Use each fixture only once. Official bet-slip tests require a selection snapshot saved with the prediction before kickoff; older records without a frozen slip are excluded."
         });
     } catch (error) {
         console.error("Recommendation test fixtures failed:", error.message);
@@ -728,6 +770,16 @@ app.post("/api/owner/recommendation-tests/:id/evaluate", requireOwner, async (re
         if (byId.size !== uniqueIds.size) {
             return res.status(400).json({
                 error: "Some selected matches do not have a complete prediction saved before kickoff, an actual result, or the original expected-goal inputs. Older records without expected goals cannot be used for this fair test."
+            });
+        }
+        const frozenBetSlipResult = await dbPool.query(
+            "SELECT prediction_id, market, selection, confidence, threshold_percent FROM prediction_bet_slips WHERE prediction_id = ANY($1::bigint[])",
+            [Array.from(uniqueIds)]
+        );
+        const frozenBetSlips = new Map(frozenBetSlipResult.rows.map(row => [String(row.prediction_id), row]));
+        if (frozenBetSlips.size !== uniqueIds.size) {
+            return res.status(400).json({
+                error: "Some selected matches have no bet slip snapshot saved with the original prediction. For official bet-slip testing, use predictions recorded after this feature was added and saved before kickoff."
             });
         }
 
@@ -845,7 +897,7 @@ app.post("/api/owner/recommendation-tests/:id/evaluate", requireOwner, async (re
                 candidateResultChances: candidateChances.map(value => Number((value * 100).toFixed(2))),
                 baselineBrier,
                 candidateBrier,
-                betSlip: chooseHighConfidenceBet(saved, actualHome, actualAway)
+                betSlip: scoreFrozenBetSlip(frozenBetSlips.get(String(saved.id)), actualHome, actualAway)
             });
         }
 
