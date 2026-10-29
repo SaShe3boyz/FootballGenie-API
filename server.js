@@ -199,6 +199,49 @@ const predictionSchemaReady = dbPool
         })
     : Promise.resolve();
 
+// Recommendation testing records candidate settings and compares candidate predictions with the
+// existing approach on the exact same completed fixtures. Approval is tracked separately from
+// runtime application: this API cannot change the Android prediction engine by itself.
+const recommendationTestingSchemaReady = dbPool
+    ? dbPool.query(`
+        CREATE TABLE IF NOT EXISTS recommendation_tests (
+            id BIGSERIAL PRIMARY KEY,
+            title VARCHAR(160) NOT NULL,
+            description VARCHAR(2000) NOT NULL,
+            candidate_settings JSONB NOT NULL,
+            baseline_version VARCHAR(80) NOT NULL DEFAULT 'baseline-v1',
+            candidate_version VARCHAR(100) UNIQUE,
+            status VARCHAR(40) NOT NULL DEFAULT 'proposed',
+            sample_size INTEGER NOT NULL DEFAULT 0,
+            metrics JSONB,
+            decision_note VARCHAR(2000),
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            tested_at TIMESTAMPTZ,
+            decided_at TIMESTAMPTZ
+        )
+    `)
+        .then(() => dbPool.query(`
+            CREATE TABLE IF NOT EXISTS recommendation_engine_state (
+                state_key VARCHAR(80) PRIMARY KEY,
+                approved_version VARCHAR(100) NOT NULL DEFAULT 'baseline-v1',
+                previous_version VARCHAR(100),
+                runtime_applied BOOLEAN NOT NULL DEFAULT FALSE,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_by VARCHAR(80) NOT NULL DEFAULT 'owner',
+                change_note VARCHAR(2000)
+            )
+        `))
+        .then(() => dbPool.query(`
+            INSERT INTO recommendation_engine_state (state_key, approved_version, runtime_applied, change_note)
+            VALUES ('prediction_model', 'baseline-v1', FALSE, 'Baseline version; no candidate has been approved.')
+            ON CONFLICT (state_key) DO NOTHING
+        `))
+        .catch(error => {
+            console.error("Recommendation testing schema migration failed:", error.message);
+            throw error;
+        })
+    : Promise.resolve();
+
 // Save a prediction snapshot from the Android app. Actual results are only writable through owner-authenticated routes.
 function readOptionalNumber(value, min, max) {
     if (value === undefined || value === null || value === "") return null;
@@ -331,6 +374,386 @@ app.post("/api/owner/predictions/:id/result", requireOwner, async (req, res) => 
     } catch (error) {
         console.error("Recording prediction result failed:", error.message);
         return res.status(503).json({ error: "Unable to record the actual result." });
+    }
+});
+
+// Recommendation Testing Engine — owner-only proposal, fair-test, decision, and version history.
+// A candidate is never treated as successful just because it was proposed. Evaluation requires
+// pre-kickoff saved predictions with recorded final scores and compares both approaches on the same fixtures.
+app.get("/api/owner/recommendation-tests", requireOwner, async (req, res) => {
+    if (!dbPool) return res.status(503).json({ error: "Database is not configured." });
+    try {
+        await recommendationTestingSchemaReady;
+        const [tests, state] = await Promise.all([
+            dbPool.query(`SELECT id, title, description, candidate_settings, baseline_version,
+                                 candidate_version, status, sample_size, metrics, decision_note,
+                                 created_at, tested_at, decided_at
+                          FROM recommendation_tests ORDER BY created_at DESC LIMIT 50`),
+            dbPool.query(`SELECT state_key, approved_version, previous_version, runtime_applied,
+                                 updated_at, updated_by, change_note
+                          FROM recommendation_engine_state WHERE state_key = 'prediction_model'`)
+        ]);
+        return res.json({
+            tests: tests.rows,
+            versionState: state.rows[0] || null,
+            runtimeNotice: "Approved versions are recorded for release tracking only. Live predictions are unchanged until the prediction engine explicitly loads and uses the approved settings."
+        });
+    } catch (error) {
+        console.error("Recommendation test list failed:", error.message);
+        return res.status(503).json({ error: "Unable to load recommendation test history." });
+    }
+});
+
+app.post("/api/owner/recommendation-tests", requireOwner, async (req, res) => {
+    if (!dbPool) return res.status(503).json({ error: "Database is not configured." });
+    const body = req.body || {};
+    const title = String(body.title || "").trim().slice(0, 160);
+    const description = String(body.description || "").trim().slice(0, 2000);
+    const settings = body.candidateSettings;
+    if (!title || !description || !settings || typeof settings !== "object" || Array.isArray(settings)) {
+        return res.status(400).json({ error: "title, description, and a candidateSettings object are required." });
+    }
+    if (JSON.stringify(settings).length > 10000) {
+        return res.status(400).json({ error: "Candidate settings must be 10,000 characters or fewer." });
+    }
+    try {
+        await recommendationTestingSchemaReady;
+        const state = await dbPool.query(
+            "SELECT approved_version FROM recommendation_engine_state WHERE state_key = 'prediction_model'"
+        );
+        const baselineVersion = state.rows[0] ? state.rows[0].approved_version : "baseline-v1";
+        const created = await dbPool.query(
+            `INSERT INTO recommendation_tests
+                (title, description, candidate_settings, baseline_version, status)
+             VALUES ($1, $2, $3::jsonb, $4, 'proposed')
+             RETURNING id, title, description, candidate_settings, baseline_version,
+                       candidate_version, status, sample_size, created_at`,
+            [title, description, JSON.stringify(settings), baselineVersion]
+        );
+        const test = created.rows[0];
+        const candidateVersion = "candidate-" + test.id;
+        const versioned = await dbPool.query(
+            "UPDATE recommendation_tests SET candidate_version = $1 WHERE id = $2 RETURNING *",
+            [candidateVersion, test.id]
+        );
+        void logSystemEvent("recommendation_test_proposed", "info", "A candidate prediction change was proposed for testing.", {
+            testId: test.id, candidateVersion, baselineVersion
+        });
+        return res.status(201).json({
+            test: versioned.rows[0],
+            message: "Proposal saved only. No prediction settings have been changed."
+        });
+    } catch (error) {
+        console.error("Creating recommendation test failed:", error.message);
+        return res.status(503).json({ error: "Unable to save the recommendation test proposal." });
+    }
+});
+
+app.post("/api/owner/recommendation-tests/:id/evaluate", requireOwner, async (req, res) => {
+    if (!dbPool) return res.status(503).json({ error: "Database is not configured." });
+    const id = Number(req.params.id);
+    const body = req.body || {};
+    const rows = body.candidatePredictions;
+    if (!Number.isSafeInteger(id) || id <= 0) {
+        return res.status(400).json({ error: "A valid recommendation test ID is required." });
+    }
+    if (!Array.isArray(rows) || rows.length < 5 || rows.length > 150) {
+        return res.status(400).json({ error: "Provide candidate predictions for 5 to 150 different completed fixtures." });
+    }
+    if (body.unseenTestSetConfirmed !== true) {
+        return res.status(400).json({
+            error: "Confirm unseenTestSetConfirmed=true only if these fixtures were not used to design the candidate and candidate predictions were made without seeing final scores."
+        });
+    }
+    const ids = [];
+    const seenIds = new Set();
+    for (const row of rows) {
+        const predictionId = Number(row && row.predictionId);
+        const homeGoals = Number(row && row.candidateHomeGoals);
+        const awayGoals = Number(row && row.candidateAwayGoals);
+        if (!Number.isSafeInteger(predictionId) || predictionId <= 0 || seenIds.has(predictionId)) {
+            return res.status(400).json({ error: "Each candidate row needs a unique, valid predictionId." });
+        }
+        if (!Number.isFinite(homeGoals) || !Number.isFinite(awayGoals) ||
+            homeGoals < 0 || homeGoals > 20 || awayGoals < 0 || awayGoals > 20) {
+            return res.status(400).json({ error: "Candidate goal estimates must be between 0 and 20." });
+        }
+        const probabilityFields = ["homeWinProbability", "drawProbability", "awayWinProbability"];
+        const suppliedProbabilities = probabilityFields.filter(field => row[field] !== undefined && row[field] !== null && row[field] !== "");
+        if (suppliedProbabilities.length > 0 && suppliedProbabilities.length !== 3) {
+            return res.status(400).json({ error: "Provide all three result chances together: home win, draw, and away win." });
+        }
+        if (suppliedProbabilities.length === 3) {
+            const probabilities = probabilityFields.map(field => Number(row[field]));
+            if (probabilities.some(value => !Number.isFinite(value) || value < 0 || value > 100) ||
+                Math.abs(probabilities.reduce((sum, value) => sum + value, 0) - 100) > 3) {
+                return res.status(400).json({ error: "Result chances must each be between 0 and 100 and add up to about 100%." });
+            }
+        }
+        seenIds.add(predictionId);
+        ids.push(predictionId);
+    }
+
+    try {
+        await recommendationTestingSchemaReady;
+        const proposalResult = await dbPool.query(
+            "SELECT id, title, candidate_version, baseline_version, status FROM recommendation_tests WHERE id = $1",
+            [id]
+        );
+        if (!proposalResult.rowCount) return res.status(404).json({ error: "Recommendation test not found." });
+        const proposal = proposalResult.rows[0];
+        if (["rejected", "rolled_back", "approved_pending_release"].includes(proposal.status)) {
+            return res.status(409).json({ error: "This proposal is closed for further testing." });
+        }
+
+        const historyResult = await dbPool.query(
+            `SELECT id, match_external_id, competition, home_team, away_team, kickoff_at, created_at,
+                    predicted_home_goals, predicted_away_goals, home_win_probability, draw_probability,
+                    away_win_probability, actual_home_goals, actual_away_goals, prediction_status
+             FROM prediction_history
+             WHERE id = ANY($1::bigint[])
+               AND prediction_status = 'evaluated'
+               AND actual_home_goals IS NOT NULL AND actual_away_goals IS NOT NULL
+               AND kickoff_at IS NOT NULL AND created_at <= kickoff_at
+               AND predicted_home_goals IS NOT NULL AND predicted_away_goals IS NOT NULL
+             ORDER BY kickoff_at ASC`,
+            [ids]
+        );
+        const byId = new Map(historyResult.rows.map(row => [String(row.id), row]));
+        if (byId.size !== ids.length) {
+            return res.status(400).json({
+                error: "Some selected predictions are missing, not evaluated, have no kickoff time, were saved after kickoff, or have no original goal estimates. Use only complete predictions saved before kickoff."
+            });
+        }
+        const usedFixtures = new Set();
+        const sample = [];
+        for (const candidate of rows) {
+            const saved = byId.get(String(Number(candidate.predictionId)));
+            const fixtureKey = saved.match_external_id
+                ? String(saved.match_external_id)
+                : [saved.kickoff_at, saved.home_team, saved.away_team].join("|").toLowerCase();
+            if (usedFixtures.has(fixtureKey)) {
+                return res.status(400).json({ error: "The test contains the same fixture more than once. Each match can be counted only once." });
+            }
+            usedFixtures.add(fixtureKey);
+            const actualHome = Number(saved.actual_home_goals);
+            const actualAway = Number(saved.actual_away_goals);
+            const baselineHome = Number(saved.predicted_home_goals);
+            const baselineAway = Number(saved.predicted_away_goals);
+            const candidateHome = Number(candidate.candidateHomeGoals);
+            const candidateAway = Number(candidate.candidateAwayGoals);
+            const resultFor = (home, away) => home > away ? "home" : home < away ? "away" : "draw";
+            const actualResult = resultFor(actualHome, actualAway);
+            const baselineCorrect = resultFor(baselineHome, baselineAway) === actualResult;
+            const candidateCorrect = resultFor(candidateHome, candidateAway) === actualResult;
+            const resultHasProbabilities = candidate.homeWinProbability !== undefined &&
+                candidate.homeWinProbability !== null && candidate.drawProbability !== undefined &&
+                candidate.drawProbability !== null && candidate.awayWinProbability !== undefined &&
+                candidate.awayWinProbability !== null;
+            let candidateBrier = null;
+            let baselineBrier = null;
+            if (resultHasProbabilities &&
+                saved.home_win_probability !== null && saved.draw_probability !== null && saved.away_win_probability !== null) {
+                const actualVector = [actualResult === "home" ? 100 : 0, actualResult === "draw" ? 100 : 0, actualResult === "away" ? 100 : 0];
+                const baselineVector = [Number(saved.home_win_probability), Number(saved.draw_probability), Number(saved.away_win_probability)];
+                const candidateVector = [Number(candidate.homeWinProbability), Number(candidate.drawProbability), Number(candidate.awayWinProbability)];
+                baselineBrier = baselineVector.reduce((sum, value, index) => sum + Math.pow(value / 100 - actualVector[index] / 100, 2), 0);
+                candidateBrier = candidateVector.reduce((sum, value, index) => sum + Math.pow(value / 100 - actualVector[index] / 100, 2), 0);
+            }
+            sample.push({
+                predictionId: Number(saved.id),
+                fixture: saved.home_team + " vs " + saved.away_team,
+                competition: saved.competition,
+                kickoffAt: saved.kickoff_at,
+                actualHomeGoals: actualHome,
+                actualAwayGoals: actualAway,
+                baselineHomeGoals: baselineHome,
+                baselineAwayGoals: baselineAway,
+                candidateHomeGoals: candidateHome,
+                candidateAwayGoals: candidateAway,
+                baselineHomeError: Math.abs(baselineHome - actualHome),
+                baselineAwayError: Math.abs(baselineAway - actualAway),
+                candidateHomeError: Math.abs(candidateHome - actualHome),
+                candidateAwayError: Math.abs(candidateAway - actualAway),
+                baselineResultCorrect: baselineCorrect,
+                candidateResultCorrect: candidateCorrect,
+                baselineBrier,
+                candidateBrier
+            });
+        }
+
+        const count = sample.length;
+        const average = values => values.reduce((sum, value) => sum + value, 0) / count;
+        const baselineHomeMae = average(sample.map(item => item.baselineHomeError));
+        const baselineAwayMae = average(sample.map(item => item.baselineAwayError));
+        const candidateHomeMae = average(sample.map(item => item.candidateHomeError));
+        const candidateAwayMae = average(sample.map(item => item.candidateAwayError));
+        const baselineGoalMae = (baselineHomeMae + baselineAwayMae) / 2;
+        const candidateGoalMae = (candidateHomeMae + candidateAwayMae) / 2;
+        const baselineResultAccuracy = average(sample.map(item => item.baselineResultCorrect ? 1 : 0));
+        const candidateResultAccuracy = average(sample.map(item => item.candidateResultCorrect ? 1 : 0));
+        const brierRows = sample.filter(item => item.baselineBrier !== null && item.candidateBrier !== null);
+        const baselineBrier = brierRows.length ? brierRows.reduce((sum, item) => sum + item.baselineBrier, 0) / brierRows.length : null;
+        const candidateBrier = brierRows.length ? brierRows.reduce((sum, item) => sum + item.candidateBrier, 0) / brierRows.length : null;
+        const enoughMatches = count >= 30;
+        const goalImprovement = baselineGoalMae - candidateGoalMae;
+        const resultDrop = baselineResultAccuracy - candidateResultAccuracy;
+        const brierImprovement = baselineBrier !== null && candidateBrier !== null ? baselineBrier - candidateBrier : null;
+        const candidateBetter = enoughMatches &&
+            ((goalImprovement >= 0.05 && resultDrop <= 0.05) ||
+             (brierImprovement !== null && brierImprovement >= 0.01 && resultDrop <= 0.05));
+        const status = !enoughMatches ? "insufficient_sample" :
+            candidateBetter ? "tested_candidate_better" :
+            (goalImprovement < -0.05 || resultDrop > 0.05 ||
+             (brierImprovement !== null && brierImprovement < -0.01)) ? "tested_candidate_worse" : "tested_no_clear_improvement";
+        const metrics = {
+            sampleSize: count,
+            minimumRecommendedMatches: 30,
+            baseline: {
+                averageHomeGoalDifference: Number(baselineHomeMae.toFixed(4)),
+                averageAwayGoalDifference: Number(baselineAwayMae.toFixed(4)),
+                averageGoalDifference: Number(baselineGoalMae.toFixed(4)),
+                correctResultPickPercent: Number((baselineResultAccuracy * 100).toFixed(2)),
+                averageResultChanceError: baselineBrier === null ? null : Number(baselineBrier.toFixed(5))
+            },
+            candidate: {
+                averageHomeGoalDifference: Number(candidateHomeMae.toFixed(4)),
+                averageAwayGoalDifference: Number(candidateAwayMae.toFixed(4)),
+                averageGoalDifference: Number(candidateGoalMae.toFixed(4)),
+                correctResultPickPercent: Number((candidateResultAccuracy * 100).toFixed(2)),
+                averageResultChanceError: candidateBrier === null ? null : Number(candidateBrier.toFixed(5))
+            },
+            change: {
+                goalDifferenceImprovement: Number(goalImprovement.toFixed(4)),
+                correctResultPickChangePercentagePoints: Number(((candidateResultAccuracy - baselineResultAccuracy) * 100).toFixed(2)),
+                resultChanceErrorImprovement: brierImprovement === null ? null : Number(brierImprovement.toFixed(5))
+            },
+            testSetDeclaration: "Owner confirmed the candidate was designed without using these test fixtures and candidate predictions were made without seeing final scores.",
+            decisionGuidance: !enoughMatches
+                ? "Too few matches to approve this change. Collect at least 30 different completed fixtures and repeat a fair test."
+                : candidateBetter
+                    ? "The candidate improved at least one measured area without reducing correct result picks by more than 5 percentage points. This is evidence for review, not proof of future success."
+                    : "The candidate has not shown enough improvement to approve. Keep the current approach and gather more fair-test results.",
+            fixtures: sample
+        };
+        const savedTest = await dbPool.query(
+            `UPDATE recommendation_tests
+             SET status = $1, sample_size = $2, metrics = $3::jsonb, tested_at = NOW()
+             WHERE id = $4
+             RETURNING id, title, candidate_version, baseline_version, status, sample_size, metrics, tested_at`,
+            [status, count, JSON.stringify(metrics), id]
+        );
+        void logSystemEvent("recommendation_test_evaluated", "info", "A candidate prediction approach was compared with the baseline on saved completed fixtures.", {
+            testId: id, candidateVersion: proposal.candidate_version, sampleSize: count, status
+        });
+        return res.json({
+            test: savedTest.rows[0],
+            runtimeApplied: false,
+            message: "This is a recorded historical comparison. It does not change live predictions."
+        });
+    } catch (error) {
+        console.error("Evaluating recommendation test failed:", error.message);
+        return res.status(503).json({ error: "Unable to evaluate this recommendation test." });
+    }
+});
+
+app.post("/api/owner/recommendation-tests/:id/decision", requireOwner, async (req, res) => {
+    if (!dbPool) return res.status(503).json({ error: "Database is not configured." });
+    const id = Number(req.params.id);
+    const decision = String(req.body && req.body.decision || "").trim().toLowerCase();
+    const note = String(req.body && req.body.note || "").trim().slice(0, 2000);
+    if (!Number.isSafeInteger(id) || id <= 0) return res.status(400).json({ error: "A valid recommendation test ID is required." });
+    if (!["adopt", "reject", "rollback"].includes(decision)) {
+        return res.status(400).json({ error: "decision must be adopt, reject, or rollback." });
+    }
+    try {
+        await recommendationTestingSchemaReady;
+        const client = await dbPool.connect();
+        try {
+            await client.query("BEGIN");
+            const testResult = await client.query(
+                "SELECT * FROM recommendation_tests WHERE id = $1 FOR UPDATE",
+                [id]
+            );
+            if (!testResult.rowCount) {
+                await client.query("ROLLBACK");
+                return res.status(404).json({ error: "Recommendation test not found." });
+            }
+            const test = testResult.rows[0];
+            const stateResult = await client.query(
+                "SELECT * FROM recommendation_engine_state WHERE state_key = 'prediction_model' FOR UPDATE"
+            );
+            const state = stateResult.rows[0];
+            if (decision === "adopt") {
+                if (test.status !== "tested_candidate_better" || Number(test.sample_size) < 30) {
+                    await client.query("ROLLBACK");
+                    return res.status(409).json({ error: "Adoption requires a fair test with at least 30 completed fixtures and evidence of improvement." });
+                }
+                if (state && state.approved_version === test.candidate_version) {
+                    await client.query("ROLLBACK");
+                    return res.status(409).json({ error: "This candidate version is already approved." });
+                }
+                await client.query(
+                    `UPDATE recommendation_engine_state
+                     SET previous_version = approved_version, approved_version = $1, runtime_applied = FALSE,
+                         updated_at = NOW(), updated_by = 'owner', change_note = $2
+                     WHERE state_key = 'prediction_model'`,
+                    [test.candidate_version, note || "Candidate approved after historical comparison; runtime integration is still required."]
+                );
+                await client.query(
+                    "UPDATE recommendation_tests SET status = 'approved_pending_release', decision_note = $1, decided_at = NOW() WHERE id = $2",
+                    [note || "Approved for release review; not yet active in live calculations.", id]
+                );
+            } else if (decision === "reject") {
+                await client.query(
+                    "UPDATE recommendation_tests SET status = 'rejected', decision_note = $1, decided_at = NOW() WHERE id = $2",
+                    [note || "Rejected; keep the current approved version.", id]
+                );
+            } else {
+                if (!state || !state.previous_version || state.approved_version !== test.candidate_version) {
+                    await client.query("ROLLBACK");
+                    return res.status(409).json({ error: "Rollback is only available for the currently approved candidate when an earlier version is recorded." });
+                }
+                const currentVersion = state.approved_version;
+                await client.query(
+                    `UPDATE recommendation_engine_state
+                     SET approved_version = previous_version, previous_version = $1, runtime_applied = FALSE,
+                         updated_at = NOW(), updated_by = 'owner', change_note = $2
+                     WHERE state_key = 'prediction_model'`,
+                    [currentVersion, note || "Approval record rolled back. Live calculations remain unchanged until runtime integration."]
+                );
+                await client.query(
+                    "UPDATE recommendation_tests SET status = 'rolled_back', decision_note = $1, decided_at = NOW() WHERE id = $2",
+                    [note || "Approval record rolled back to the previous version.", id]
+                );
+            }
+            await client.query("COMMIT");
+            const refreshed = await dbPool.query(
+                "SELECT state_key, approved_version, previous_version, runtime_applied, updated_at, updated_by, change_note FROM recommendation_engine_state WHERE state_key = 'prediction_model'"
+            );
+            void logSystemEvent("recommendation_test_decision", "info", "A recommendation test decision was recorded.", {
+                testId: id, decision, approvedVersion: refreshed.rows[0] && refreshed.rows[0].approved_version,
+                runtimeApplied: false
+            });
+            return res.json({
+                decision,
+                versionState: refreshed.rows[0] || null,
+                runtimeApplied: false,
+                message: decision === "adopt"
+                    ? "Candidate approved for release review. The Android prediction engine still needs explicit integration before this version can affect live predictions."
+                    : decision === "rollback"
+                        ? "Approval record rolled back. Live predictions remain unchanged."
+                        : "Candidate rejected. The currently approved version remains in place."
+            });
+        } catch (transactionError) {
+            await client.query("ROLLBACK").catch(() => {});
+            throw transactionError;
+        } finally {
+            client.release();
+        }
+    } catch (error) {
+        console.error("Saving recommendation test decision failed:", error.message);
+        return res.status(503).json({ error: "Unable to save the recommendation test decision." });
     }
 });
 
