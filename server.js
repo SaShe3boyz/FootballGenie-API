@@ -1625,6 +1625,12 @@ app.get("/api/matches", async (req, res) => {
     }
 });
 
+// Short-lived caches prevent repeated team-stat screens from re-fetching the same provider data.
+const competitionStrengthCache = new Map();
+const COMPETITION_STRENGTH_CACHE_TTL_MS = 10 * 60 * 1000;
+const teamStatsCache = new Map();
+const TEAM_STATS_CACHE_TTL_MS = 10 * 60 * 1000;
+
 // Return current competition home/away scoring baselines and team strength rates.
 // These season rates let the app adjust recent form for the level of opposition.
 app.get("/api/competition-strength", async (req, res) => {
@@ -1635,6 +1641,13 @@ app.get("/api/competition-strength", async (req, res) => {
     const competitionId = String(req.query.competitionId || "");
     if (!/^\d+$/.test(competitionId) || Number(competitionId) <= 0) {
         return res.status(400).json({ error: "A valid numeric competitionId is required." });
+    }
+
+    const cachedStrength = competitionStrengthCache.get(competitionId);
+    if (cachedStrength && Date.now() < cachedStrength.expiresAt) {
+        res.set("X-Football-Genie-Cache", "HIT");
+        res.set("Cache-Control", "public, max-age=60");
+        return res.json(cachedStrength.data);
     }
 
     try {
@@ -1697,12 +1710,24 @@ app.get("/api/competition-strength", async (req, res) => {
             teamMap[id].awayConceded = played ? (Number(row.goalsAgainst) || 0) / played : homeLeagueGoals;
         }
 
-        res.json({
+        const result = {
             competition: data.competition || { id: Number(competitionId) },
             homeLeagueGoalsPerMatch: Number(homeLeagueGoals.toFixed(3)),
             awayLeagueGoalsPerMatch: Number(awayLeagueGoals.toFixed(3)),
             teams: Object.values(teamMap)
+        };
+        competitionStrengthCache.set(competitionId, {
+            data: result,
+            expiresAt: Date.now() + COMPETITION_STRENGTH_CACHE_TTL_MS
         });
+        for (const [key, value] of competitionStrengthCache.entries()) {
+            if (Date.now() >= value.expiresAt || competitionStrengthCache.size > 100) {
+                competitionStrengthCache.delete(key);
+            }
+        }
+        res.set("X-Football-Genie-Cache", "MISS");
+        res.set("Cache-Control", "public, max-age=60");
+        res.json(result);
     } catch (error) {
         console.error("Competition strength request failed:", error.message);
         return res.status(502).json({ error: "Unable to retrieve competition standings." });
@@ -1731,6 +1756,14 @@ app.get("/api/team-stats", async (req, res) => {
         return res.status(400).json({
             error: "limit must be a whole number between 5 and 20."
         });
+    }
+
+    const teamStatsCacheKey = teamId + ":" + requestedLimit;
+    const cachedTeamStats = teamStatsCache.get(teamStatsCacheKey);
+    if (cachedTeamStats && Date.now() < cachedTeamStats.expiresAt) {
+        res.set("X-Football-Genie-Cache", "HIT");
+        res.set("Cache-Control", "public, max-age=60");
+        return res.json(cachedTeamStats.data);
     }
 
     try {
@@ -1862,7 +1895,7 @@ app.get("/api/team-stats", async (req, res) => {
             })
             .filter(Boolean);
 
-        res.json({
+        const result = {
             team: { id: Number(teamId), name: team.name },
             sampleSize: played,
             form: form,
@@ -1889,7 +1922,19 @@ app.get("/api/team-stats", async (req, res) => {
             over25Percent: played ? Number((over25 * 100 / played).toFixed(1)) : 0,
             bttsPercent: played ? Number((btts * 100 / played).toFixed(1)) : 0,
             matches: recentMatches
+        };
+        teamStatsCache.set(teamStatsCacheKey, {
+            data: result,
+            expiresAt: Date.now() + TEAM_STATS_CACHE_TTL_MS
         });
+        for (const [key, value] of teamStatsCache.entries()) {
+            if (Date.now() >= value.expiresAt || teamStatsCache.size > 500) {
+                teamStatsCache.delete(key);
+            }
+        }
+        res.set("X-Football-Genie-Cache", "MISS");
+        res.set("Cache-Control", "public, max-age=60");
+        res.json(result);
     } catch (error) {
         console.error("Team stats request failed:", error.message);
         return res.status(502).json({
