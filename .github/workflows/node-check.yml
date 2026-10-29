@@ -1,0 +1,22 @@
+name: Football Genie API Syntax Check
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "server.js"
+      - ".github/workflows/node-check.yml"
+  workflow_dispatch:
+
+jobs:
+  syntax-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Check server JavaScript syntax
+        run: node --check server.js
