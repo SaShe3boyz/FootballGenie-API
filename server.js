@@ -192,7 +192,7 @@ function renderRecommendationTests(){
   const item=document.createElement("div");item.className="item";
   const heading=document.createElement("strong");heading.textContent="#"+test.id+" "+test.title+" — "+test.status;item.appendChild(heading);
   const details=document.createElement("p");details.className="muted";details.textContent="Version: "+test.candidate_version+" | Matches tested: "+test.sample_size+" | Baseline: "+test.baseline_version;item.appendChild(details);
-  if(test.metrics){const m=test.metrics;const compare=document.createElement("p");compare.className="muted";compare.textContent="Average goal difference: "+(m.baseline.averageGoalDifference==null?"—":m.baseline.averageGoalDifference)+" → "+(m.candidate.averageGoalDifference==null?"—":m.candidate.averageGoalDifference)+" goals. Correct result picks: "+(m.baseline.correctResultPickPercent==null?"—":m.baseline.correctResultPickPercent)+"% → "+(m.candidate.correctResultPickPercent==null?"—":m.candidate.correctResultPickPercent)+"%.";item.appendChild(compare);if(m.decisionGuidance){const guidance=document.createElement("p");guidance.textContent=m.decisionGuidance;item.appendChild(guidance)}}
+  if(test.metrics){const m=test.metrics;const compare=document.createElement("p");compare.className="muted";compare.textContent="Average expected-goal error: "+(m.baseline.averageExpectedGoalError==null?"—":m.baseline.averageExpectedGoalError)+" → "+(m.candidate.averageExpectedGoalError==null?"—":m.candidate.averageExpectedGoalError)+" goals. Correct result picks: "+(m.baseline.correctResultPickPercent==null?"—":m.baseline.correctResultPickPercent)+"% → "+(m.candidate.correctResultPickPercent==null?"—":m.candidate.correctResultPickPercent)+"%.";item.appendChild(compare);if(m.decisionGuidance){const guidance=document.createElement("p");guidance.textContent=m.decisionGuidance;item.appendChild(guidance)}}
   if(test.decision_note){const note=document.createElement("p");note.className="muted";note.textContent="Decision note: "+test.decision_note;item.appendChild(note)}
   const actions=document.createElement("div");actions.className="grid";
   [["adopt","Approve for release review"],["reject","Reject proposal"],["rollback","Roll back approval record"]].forEach(function(action){
@@ -551,13 +551,15 @@ app.get("/api/owner/recommendation-test-fixtures", requireOwner, async (req, res
                     COALESCE(NULLIF(match_external_id, ''), lower(home_team) || '|' || lower(away_team) || '|' || kickoff_at::text)
                 )
                     id, match_external_id, competition, home_team, away_team, kickoff_at,
-                    predicted_home_goals, predicted_away_goals, home_win_probability,
-                    draw_probability, away_win_probability, actual_home_goals, actual_away_goals
+                    predicted_home_goals, predicted_away_goals, predicted_home_xg, predicted_away_xg,
+                    home_win_probability, draw_probability, away_win_probability,
+                    actual_home_goals, actual_away_goals
                 FROM prediction_history
                 WHERE prediction_status = 'evaluated'
                   AND actual_home_goals IS NOT NULL AND actual_away_goals IS NOT NULL
                   AND kickoff_at IS NOT NULL AND created_at <= kickoff_at
                   AND predicted_home_goals IS NOT NULL AND predicted_away_goals IS NOT NULL
+                  AND predicted_home_xg IS NOT NULL AND predicted_away_xg IS NOT NULL
                 ORDER BY COALESCE(NULLIF(match_external_id, ''), lower(home_team) || '|' || lower(away_team) || '|' || kickoff_at::text),
                          created_at ASC
             ) eligible_fixtures
@@ -590,7 +592,7 @@ app.post("/api/owner/recommendation-tests/:id/evaluate", requireOwner, async (re
     }
     if (body.unseenTestSetConfirmed !== true) {
         return res.status(400).json({
-            error: "Confirm unseenTestSetConfirmed=true only if these fixtures were not used to design the candidate."
+            error: "Confirm unseenTestSetConfirmed=true only if these fixtures were not used to design the candidate settings."
         });
     }
     const uniqueIds = new Set();
@@ -616,25 +618,28 @@ app.post("/api/owner/recommendation-tests/:id/evaluate", requireOwner, async (re
         const settings = proposal.candidate_settings || {};
         const homeMultiplier = Number(settings.homeGoalMultiplier ?? 1);
         const awayMultiplier = Number(settings.awayGoalMultiplier ?? 1);
-        const rho = Number(settings.lowScoreRho ?? -0.08);
+        const candidateRho = Number(settings.lowScoreRho ?? -0.08);
+        const baselineRho = -0.08; // Current Android low-score adjustment; keep baseline unchanged.
 
         const historyResult = await dbPool.query(
             `SELECT id, match_external_id, competition, home_team, away_team, kickoff_at, created_at,
-                    predicted_home_goals, predicted_away_goals, home_win_probability, draw_probability,
-                    away_win_probability, actual_home_goals, actual_away_goals, prediction_status
+                    predicted_home_goals, predicted_away_goals, predicted_home_xg, predicted_away_xg,
+                    home_win_probability, draw_probability, away_win_probability,
+                    actual_home_goals, actual_away_goals, prediction_status
              FROM prediction_history
              WHERE id = ANY($1::bigint[])
                AND prediction_status = 'evaluated'
                AND actual_home_goals IS NOT NULL AND actual_away_goals IS NOT NULL
                AND kickoff_at IS NOT NULL AND created_at <= kickoff_at
                AND predicted_home_goals IS NOT NULL AND predicted_away_goals IS NOT NULL
+               AND predicted_home_xg IS NOT NULL AND predicted_away_xg IS NOT NULL
              ORDER BY kickoff_at ASC`,
             [Array.from(uniqueIds)]
         );
         const byId = new Map(historyResult.rows.map(row => [String(row.id), row]));
         if (byId.size !== uniqueIds.size) {
             return res.status(400).json({
-                error: "Some selected predictions are missing, not evaluated, were saved after kickoff, or have no original goal estimates. Use only complete predictions saved before kickoff."
+                error: "Some selected matches do not have a complete prediction saved before kickoff, an actual result, or the original expected-goal inputs. Older records without expected goals cannot be used for this fair test."
             });
         }
 
@@ -643,27 +648,39 @@ app.post("/api/owner/recommendation-tests/:id/evaluate", requireOwner, async (re
             for (let i = 1; i <= goals; i++) probability *= lambda / i;
             return probability;
         };
-        const correction = (home, away, homeGoals, awayGoals) => {
+        const correction = (home, away, homeGoals, awayGoals, rho) => {
             if (homeGoals === 0 && awayGoals === 0) return 1 - home * away * rho;
             if (homeGoals === 0 && awayGoals === 1) return 1 + home * rho;
             if (homeGoals === 1 && awayGoals === 0) return 1 + away * rho;
             if (homeGoals === 1 && awayGoals === 1) return 1 - rho;
             return 1;
         };
-        const distributionFor = (home, away) => {
+        // Mirrors the Android score grid and low-score correction for deterministic market estimates.
+        const distributionFor = (home, away, rho) => {
+            const gridSize = Math.max(13, Math.ceil(Math.max(home, away) + 10));
             let homeWin = 0, draw = 0, awayWin = 0, total = 0;
-            for (let h = 0; h <= 18; h++) {
+            let modalHome = 0, modalAway = 0, modalProbability = -1;
+            for (let h = 0; h < gridSize; h++) {
                 const homeP = poissonProbability(h, home);
-                for (let a = 0; a <= 18; a++) {
-                    const p = homeP * poissonProbability(a, away) * correction(home, away, h, a);
-                    total += p;
-                    if (h > a) homeWin += p;
-                    else if (h === a) draw += p;
-                    else awayWin += p;
+                for (let a = 0; a < gridSize; a++) {
+                    const raw = homeP * poissonProbability(a, away) * correction(home, away, h, a, rho);
+                    total += raw;
+                    if (raw > modalProbability) {
+                        modalProbability = raw;
+                        modalHome = h;
+                        modalAway = a;
+                    }
+                    if (h > a) homeWin += raw;
+                    else if (h === a) draw += raw;
+                    else awayWin += raw;
                 }
             }
-            if (total > 0) return [homeWin / total, draw / total, awayWin / total];
-            return [1 / 3, 1 / 3, 1 / 3];
+            if (total > 0) return {
+                chances: [homeWin / total, draw / total, awayWin / total],
+                modalHome,
+                modalAway
+            };
+            return { chances: [1 / 3, 1 / 3, 1 / 3], modalHome: 0, modalAway: 0 };
         };
         const pickResult = chances => chances[0] >= chances[1] && chances[0] >= chances[2]
             ? "home" : chances[1] >= chances[2] ? "draw" : "away";
@@ -682,23 +699,23 @@ app.post("/api/owner/recommendation-tests/:id/evaluate", requireOwner, async (re
 
             const actualHome = Number(saved.actual_home_goals);
             const actualAway = Number(saved.actual_away_goals);
-            const baselineHome = Number(saved.predicted_home_goals);
-            const baselineAway = Number(saved.predicted_away_goals);
-            const candidateHome = baselineHome * homeMultiplier;
-            const candidateAway = baselineAway * awayMultiplier;
-            if (candidateHome > 8 || candidateAway > 8) {
-                return res.status(400).json({
-                    error: "These settings push at least one goal estimate above 8. Reduce the multiplier and test again."
-                });
+            const baselineXgHome = Number(saved.predicted_home_xg);
+            const baselineXgAway = Number(saved.predicted_away_xg);
+            const candidateXgHome = baselineXgHome * homeMultiplier;
+            const candidateXgAway = baselineXgAway * awayMultiplier;
+            if (candidateXgHome > 8 || candidateXgAway > 8) {
+                return res.status(400).json({ error: "These settings push at least one expected-goal estimate above 8. Reduce the multiplier and test again." });
             }
+
             const actualResult = resultForScore(actualHome, actualAway);
             const baselineHasChances = saved.home_win_probability !== null &&
                 saved.draw_probability !== null && saved.away_win_probability !== null;
+            const baselineDistribution = distributionFor(baselineXgHome, baselineXgAway, baselineRho);
+            const candidateDistribution = distributionFor(candidateXgHome, candidateXgAway, candidateRho);
             const baselineChances = baselineHasChances
-                ? [Number(saved.home_win_probability), Number(saved.draw_probability), Number(saved.away_win_probability)]
-                    .map(value => value / 100)
-                : distributionFor(baselineHome, baselineAway);
-            const candidateChances = distributionFor(candidateHome, candidateAway);
+                ? [Number(saved.home_win_probability), Number(saved.draw_probability), Number(saved.away_win_probability)].map(value => value / 100)
+                : baselineDistribution.chances;
+            const candidateChances = candidateDistribution.chances;
             const baselinePick = pickResult(baselineChances);
             const candidatePick = pickResult(candidateChances);
             const actualVector = [actualResult === "home" ? 1 : 0, actualResult === "draw" ? 1 : 0, actualResult === "away" ? 1 : 0];
@@ -706,6 +723,10 @@ app.post("/api/owner/recommendation-tests/:id/evaluate", requireOwner, async (re
                 ? baselineChances.reduce((sum, value, index) => sum + Math.pow(value - actualVector[index], 2), 0)
                 : null;
             const candidateBrier = candidateChances.reduce((sum, value, index) => sum + Math.pow(value - actualVector[index], 2), 0);
+            const baselineScoreHome = Number(saved.predicted_home_goals);
+            const baselineScoreAway = Number(saved.predicted_away_goals);
+            const candidateScoreHome = candidateDistribution.modalHome;
+            const candidateScoreAway = candidateDistribution.modalAway;
 
             sample.push({
                 predictionId: Number(saved.id),
@@ -714,14 +735,22 @@ app.post("/api/owner/recommendation-tests/:id/evaluate", requireOwner, async (re
                 kickoffAt: saved.kickoff_at,
                 actualHomeGoals: actualHome,
                 actualAwayGoals: actualAway,
-                baselineHomeGoals: Number(baselineHome.toFixed(3)),
-                baselineAwayGoals: Number(baselineAway.toFixed(3)),
-                candidateHomeGoals: Number(candidateHome.toFixed(3)),
-                candidateAwayGoals: Number(candidateAway.toFixed(3)),
-                baselineHomeError: Math.abs(baselineHome - actualHome),
-                baselineAwayError: Math.abs(baselineAway - actualAway),
-                candidateHomeError: Math.abs(candidateHome - actualHome),
-                candidateAwayError: Math.abs(candidateAway - actualAway),
+                baselineExpectedHomeGoals: Number(baselineXgHome.toFixed(3)),
+                baselineExpectedAwayGoals: Number(baselineXgAway.toFixed(3)),
+                candidateExpectedHomeGoals: Number(candidateXgHome.toFixed(3)),
+                candidateExpectedAwayGoals: Number(candidateXgAway.toFixed(3)),
+                baselinePredictedHomeScore: baselineScoreHome,
+                baselinePredictedAwayScore: baselineScoreAway,
+                candidatePredictedHomeScore: candidateScoreHome,
+                candidatePredictedAwayScore: candidateScoreAway,
+                baselineHomeExpectedGoalError: Math.abs(baselineXgHome - actualHome),
+                baselineAwayExpectedGoalError: Math.abs(baselineXgAway - actualAway),
+                candidateHomeExpectedGoalError: Math.abs(candidateXgHome - actualHome),
+                candidateAwayExpectedGoalError: Math.abs(candidateXgAway - actualAway),
+                baselineHomeScoreError: Math.abs(baselineScoreHome - actualHome),
+                baselineAwayScoreError: Math.abs(baselineScoreAway - actualAway),
+                candidateHomeScoreError: Math.abs(candidateScoreHome - actualHome),
+                candidateAwayScoreError: Math.abs(candidateScoreAway - actualAway),
                 baselineResultCorrect: baselinePick === actualResult,
                 candidateResultCorrect: candidatePick === actualResult,
                 baselineResultChances: baselineChances.map(value => Number((value * 100).toFixed(2))),
@@ -733,12 +762,14 @@ app.post("/api/owner/recommendation-tests/:id/evaluate", requireOwner, async (re
 
         const count = sample.length;
         const average = values => values.reduce((sum, value) => sum + value, 0) / count;
-        const baselineHomeMae = average(sample.map(item => item.baselineHomeError));
-        const baselineAwayMae = average(sample.map(item => item.baselineAwayError));
-        const candidateHomeMae = average(sample.map(item => item.candidateHomeError));
-        const candidateAwayMae = average(sample.map(item => item.candidateAwayError));
-        const baselineGoalMae = (baselineHomeMae + baselineAwayMae) / 2;
-        const candidateGoalMae = (candidateHomeMae + candidateAwayMae) / 2;
+        const baselineHomeMae = average(sample.map(item => item.baselineHomeExpectedGoalError));
+        const baselineAwayMae = average(sample.map(item => item.baselineAwayExpectedGoalError));
+        const candidateHomeMae = average(sample.map(item => item.candidateHomeExpectedGoalError));
+        const candidateAwayMae = average(sample.map(item => item.candidateAwayExpectedGoalError));
+        const baselineExpectedGoalError = (baselineHomeMae + baselineAwayMae) / 2;
+        const candidateExpectedGoalError = (candidateHomeMae + candidateAwayMae) / 2;
+        const baselineScoreError = average(sample.map(item => (item.baselineHomeScoreError + item.baselineAwayScoreError) / 2));
+        const candidateScoreError = average(sample.map(item => (item.candidateHomeScoreError + item.candidateAwayScoreError) / 2));
         const baselineResultAccuracy = average(sample.map(item => item.baselineResultCorrect ? 1 : 0));
         const candidateResultAccuracy = average(sample.map(item => item.candidateResultCorrect ? 1 : 0));
         const baselineBrierRows = sample.filter(item => item.baselineBrier !== null);
@@ -746,36 +777,33 @@ app.post("/api/owner/recommendation-tests/:id/evaluate", requireOwner, async (re
             ? baselineBrierRows.reduce((sum, item) => sum + item.baselineBrier, 0) / baselineBrierRows.length : null;
         const candidateBrier = average(sample.map(item => item.candidateBrier));
         const enoughMatches = count >= 30;
-        const goalImprovement = baselineGoalMae - candidateGoalMae;
+        const expectedGoalImprovement = baselineExpectedGoalError - candidateExpectedGoalError;
         const resultDrop = baselineResultAccuracy - candidateResultAccuracy;
         const brierImprovement = baselineBrier !== null ? baselineBrier - candidateBrier : null;
-        const candidateBetter = enoughMatches &&
-            ((goalImprovement >= 0.05 && resultDrop <= 0.05) ||
-             (brierImprovement !== null && brierImprovement >= 0.01 && resultDrop <= 0.05));
+        const candidateBetter = enoughMatches && resultDrop <= 0.05 &&
+            (expectedGoalImprovement >= 0.05 || (brierImprovement !== null && brierImprovement >= 0.01));
         const status = !enoughMatches ? "insufficient_sample" :
             candidateBetter ? "tested_candidate_better" :
-            (goalImprovement < -0.05 || resultDrop > 0.05 ||
+            (expectedGoalImprovement < -0.05 || resultDrop > 0.05 ||
              (brierImprovement !== null && brierImprovement < -0.01)) ? "tested_candidate_worse" : "tested_no_clear_improvement";
         const metrics = {
             sampleSize: count,
             minimumRecommendedMatches: 30,
-            candidateSettings: { homeGoalMultiplier: homeMultiplier, awayGoalMultiplier: awayMultiplier, lowScoreRho: rho },
+            candidateSettings: { homeGoalMultiplier: homeMultiplier, awayGoalMultiplier: awayMultiplier, lowScoreRho: candidateRho },
             baseline: {
-                averageHomeGoalDifference: Number(baselineHomeMae.toFixed(4)),
-                averageAwayGoalDifference: Number(baselineAwayMae.toFixed(4)),
-                averageGoalDifference: Number(baselineGoalMae.toFixed(4)),
+                averageExpectedGoalError: Number(baselineExpectedGoalError.toFixed(4)),
+                averageScorelineGoalDifference: Number(baselineScoreError.toFixed(4)),
                 correctResultPickPercent: Number((baselineResultAccuracy * 100).toFixed(2)),
                 averageResultChanceError: baselineBrier === null ? null : Number(baselineBrier.toFixed(5))
             },
             candidate: {
-                averageHomeGoalDifference: Number(candidateHomeMae.toFixed(4)),
-                averageAwayGoalDifference: Number(candidateAwayMae.toFixed(4)),
-                averageGoalDifference: Number(candidateGoalMae.toFixed(4)),
+                averageExpectedGoalError: Number(candidateExpectedGoalError.toFixed(4)),
+                averageScorelineGoalDifference: Number(candidateScoreError.toFixed(4)),
                 correctResultPickPercent: Number((candidateResultAccuracy * 100).toFixed(2)),
                 averageResultChanceError: Number(candidateBrier.toFixed(5))
             },
             change: {
-                goalDifferenceImprovement: Number(goalImprovement.toFixed(4)),
+                expectedGoalErrorImprovement: Number(expectedGoalImprovement.toFixed(4)),
                 correctResultPickChangePercentagePoints: Number(((candidateResultAccuracy - baselineResultAccuracy) * 100).toFixed(2)),
                 resultChanceErrorImprovement: brierImprovement === null ? null : Number(brierImprovement.toFixed(5))
             },
@@ -783,7 +811,7 @@ app.post("/api/owner/recommendation-tests/:id/evaluate", requireOwner, async (re
             decisionGuidance: !enoughMatches
                 ? "Too few matches to approve this change. Collect at least 30 different completed fixtures and repeat a fair test."
                 : candidateBetter
-                    ? "The candidate improved at least one measured area without reducing correct result picks by more than 5 percentage points. This is evidence for review, not proof of future success."
+                    ? "The candidate improved expected-goal error or result-chance accuracy without reducing correct result picks by more than 5 percentage points. This is evidence for review, not proof of future success."
                     : "The candidate has not shown enough improvement to approve. Keep the current approach and gather more fair-test results.",
             fixtures: sample
         };
@@ -794,13 +822,13 @@ app.post("/api/owner/recommendation-tests/:id/evaluate", requireOwner, async (re
              RETURNING id, title, candidate_settings, candidate_version, baseline_version, status, sample_size, metrics, tested_at`,
             [status, count, JSON.stringify(metrics), id]
         );
-        void logSystemEvent("recommendation_test_evaluated", "info", "A candidate configuration was compared with the baseline on saved completed fixtures.", {
+        void logSystemEvent("recommendation_test_evaluated", "info", "Candidate settings were compared with the baseline using original expected goals and completed fixtures.", {
             testId: id, candidateVersion: proposal.candidate_version, sampleSize: count, status
         });
         return res.json({
             test: savedTest.rows[0],
             runtimeApplied: false,
-            message: "This historical comparison evaluates the proposed settings against saved results. It does not change live predictions."
+            message: "Historical comparison complete. It used original expected-goal inputs and does not change live predictions."
         });
     } catch (error) {
         console.error("Evaluating recommendation test failed:", error.message);
