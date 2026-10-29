@@ -473,6 +473,73 @@ app.post("/api/predictions", async (req, res) => {
     }
 });
 
+// Public app-facing bet slips are scoped to the anonymous app install ID.
+// Only pre-kickoff snapshots are returned; client IDs and other users' records are never exposed.
+app.get("/api/bet-slips", async (req, res) => {
+    if (!dbPool) return res.status(503).json({ error: "Database is not configured." });
+    const clientId = String(req.query && req.query.clientId || "").trim().slice(0, 120);
+    if (!clientId) return res.status(400).json({ error: "clientId is required to load this device's saved bet slips." });
+    const requestedLimit = Number(req.query && req.query.limit || 100);
+    const limit = Number.isFinite(requestedLimit) ? Math.max(1, Math.min(150, Math.floor(requestedLimit))) : 100;
+    try {
+        await Promise.all([predictionSchemaReady, recommendationTestingSchemaReady]);
+        const result = await dbPool.query(
+            `SELECT p.id, p.match_external_id, p.competition, p.home_team, p.away_team,
+                    p.kickoff_at, p.actual_home_goals, p.actual_away_goals, p.prediction_status,
+                    s.market, s.selection, s.confidence, s.threshold_percent, s.created_at AS saved_at
+             FROM prediction_history p
+             JOIN prediction_bet_slips s ON s.prediction_id = p.id
+             WHERE p.client_id = $1
+               AND p.kickoff_at IS NOT NULL
+               AND p.created_at <= p.kickoff_at
+             ORDER BY p.kickoff_at DESC, p.id DESC
+             LIMIT $2`,
+            [clientId, limit]
+        );
+        const slips = result.rows.map(row => {
+            const homeGoals = row.actual_home_goals == null ? null : Number(row.actual_home_goals);
+            const awayGoals = row.actual_away_goals == null ? null : Number(row.actual_away_goals);
+            let status = "pending";
+            if (homeGoals !== null && awayGoals !== null) {
+                if (!row.selection) status = "no_selection";
+                else {
+                    let actualSelection;
+                    if (row.market === "Match Result") {
+                        actualSelection = homeGoals > awayGoals ? "Home Win" : homeGoals === awayGoals ? "Draw" : "Away Win";
+                    } else if (row.market === "Goals 2.5") {
+                        actualSelection = homeGoals + awayGoals > 2.5 ? "Over 2.5 Goals" : "Under 2.5 Goals";
+                    } else if (row.market === "Both Teams to Score") {
+                        actualSelection = homeGoals > 0 && awayGoals > 0 ? "Yes" : "No";
+                    }
+                    status = actualSelection === row.selection ? "won" : "lost";
+                }
+            }
+            return { ...row, status };
+        });
+        const selected = slips.filter(slip => Boolean(slip.selection));
+        const settled = selected.filter(slip => slip.status === "won" || slip.status === "lost");
+        const won = settled.filter(slip => slip.status === "won").length;
+        return res.json({
+            slips,
+            count: slips.length,
+            summary: {
+                totalMatches: slips.length,
+                highConfidenceSelections: selected.length,
+                won,
+                lost: settled.length - won,
+                pending: slips.filter(slip => slip.status === "pending").length,
+                noSelection: slips.filter(slip => !slip.selection).length,
+                successRatePercent: settled.length ? Number((won * 100 / settled.length).toFixed(1)) : null
+            },
+            thresholdPercent: 70,
+            note: "Selections are frozen when predictions are saved before kickoff. A displayed confidence is an estimate, not a guarantee."
+        });
+    } catch (error) {
+        console.error("App bet slips failed:", error.message);
+        return res.status(503).json({ error: "Unable to load saved bet slips right now." });
+    }
+});
+
 // Private owner-only prediction history.
 app.get("/api/owner/predictions", requireOwner, async (req, res) => {
     if (!dbPool) return res.status(503).json({ error: "Database is not configured." });
