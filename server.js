@@ -145,6 +145,26 @@ button{background:#087eaa;border:0;font-weight:700;margin-top:12px;cursor:pointe
 <button id="saveNotice">Save notification</button></section>
 <section class="panel"><h2>Recent notifications</h2><div id="notifications" class="muted">Connect to load notifications.</div></section>
 <section class="panel"><h2>Prediction History</h2><p class="muted">Latest saved predictions from the central database. Accuracy will be calculated only from matches with recorded actual scores.</p><div id="predictionList" class="muted">Connect to load predictions.</div></section>
+<section class="panel" id="recommendationPanel">
+<h2>Recommendation Testing Engine</h2>
+<p class="muted">Test proposed goal-estimate changes against different completed matches saved before kickoff. This records evidence only; it does not change live predictions. Use test matches that were not used to design your proposed settings.</p>
+<div class="grid">
+<div><label for="rtTitle">Test name</label><input id="rtTitle" maxlength="160" value="Goal estimate adjustment test"></div>
+<div><label for="rtHomeMultiplier">Home goal estimate multiplier</label><input id="rtHomeMultiplier" type="number" min="0.5" max="1.5" step="0.05" value="1.05"></div>
+<div><label for="rtAwayMultiplier">Away goal estimate multiplier</label><input id="rtAwayMultiplier" type="number" min="0.5" max="1.5" step="0.05" value="1.05"></div>
+<div><label for="rtRho">Low-score adjustment</label><input id="rtRho" type="number" min="-0.08" max="0.08" step="0.01" value="-0.08"></div>
+</div>
+<label for="rtDescription">What are you testing?</label><textarea id="rtDescription" maxlength="2000" rows="2">Check whether a small adjustment to expected goals improves score estimates without damaging result predictions.</textarea>
+<button id="rtCreate">Save proposed test</button>
+<p id="rtNotice" class="muted" role="status">Create a proposal, then load eligible historical fixtures.</p>
+<div class="item"><label for="rtTestSelect">Test to evaluate</label><select id="rtTestSelect"><option value="">No tests loaded yet</option></select></div>
+<button id="rtRefresh">Refresh test history</button>
+<button id="rtLoadFixtures">Load eligible completed fixtures</button>
+<p class="muted">Select different matches only. A minimum of 30 matches is required before a candidate can qualify for approval. Smaller samples are for early checking only.</p>
+<div id="rtFixtureList" class="muted">Eligible fixtures have not been loaded.</div>
+<button id="rtEvaluate">Evaluate selected matches</button>
+<div id="rtTestList" class="muted">No recommendation tests loaded.</div>
+</section>
 <section class="panel"><h2>Recent system events</h2><div id="eventList" class="muted">Connect to load events.</div></section>
 </div></main>
 <script>
@@ -158,6 +178,61 @@ $("connect").addEventListener("click",()=>{token=$("token").value.trim();if(!tok
 $("refresh").addEventListener("click",refresh);
 $("logout").addEventListener("click",()=>{sessionStorage.removeItem("fg_owner_token");token="";$("token").value="";$("dashboard").style.display="none";$("notice").textContent="Signed out."});
 $("saveNotice").addEventListener("click",async()=>{try{await api("/api/owner/notifications",{method:"POST",body:JSON.stringify({title:$("ntitle").value,message:$("nmessage").value,notification_type:$("ntype").value})});$("ntitle").value="";$("nmessage").value="";$("notice").textContent="Notification saved.";await refresh()}catch(e){$("notice").className="muted error";$("notice").textContent=e.message}});
+
+let recommendationTests=[];
+let recommendationFixtures=[];
+function setRecommendationNotice(message,isError){$("rtNotice").className=isError?"muted error":"muted ok";$("rtNotice").textContent=message}
+function renderRecommendationTests(){
+ const select=$("rtTestSelect");select.replaceChildren();
+ if(!recommendationTests.length){const option=document.createElement("option");option.value="";option.textContent="No proposals yet";select.appendChild(option)}
+ recommendationTests.forEach(function(test){const option=document.createElement("option");option.value=String(test.id);option.textContent="#"+test.id+" • "+test.title+" • "+test.status;select.appendChild(option)});
+ const box=$("rtTestList");box.replaceChildren();
+ if(!recommendationTests.length){box.textContent="No recommendation tests saved yet.";return}
+ recommendationTests.forEach(function(test){
+  const item=document.createElement("div");item.className="item";
+  const heading=document.createElement("strong");heading.textContent="#"+test.id+" "+test.title+" — "+test.status;item.appendChild(heading);
+  const details=document.createElement("p");details.className="muted";details.textContent="Version: "+test.candidate_version+" | Matches tested: "+test.sample_size+" | Baseline: "+test.baseline_version;item.appendChild(details);
+  if(test.metrics){const m=test.metrics;const compare=document.createElement("p");compare.className="muted";compare.textContent="Average goal difference: "+(m.baseline.averageGoalDifference==null?"—":m.baseline.averageGoalDifference)+" → "+(m.candidate.averageGoalDifference==null?"—":m.candidate.averageGoalDifference)+" goals. Correct result picks: "+(m.baseline.correctResultPickPercent==null?"—":m.baseline.correctResultPickPercent)+"% → "+(m.candidate.correctResultPickPercent==null?"—":m.candidate.correctResultPickPercent)+"%.";item.appendChild(compare);if(m.decisionGuidance){const guidance=document.createElement("p");guidance.textContent=m.decisionGuidance;item.appendChild(guidance)}}
+  if(test.decision_note){const note=document.createElement("p");note.className="muted";note.textContent="Decision note: "+test.decision_note;item.appendChild(note)}
+  const actions=document.createElement("div");actions.className="grid";
+  [["adopt","Approve for release review"],["reject","Reject proposal"],["rollback","Roll back approval record"]].forEach(function(action){
+   const button=document.createElement("button");button.type="button";button.textContent=action[1];button.style.background=action[0]==="adopt"?"#087eaa":action[0]==="reject"?"#6c3845":"#42546a";
+   button.addEventListener("click",async function(){const note=window.prompt("Optional note for this decision:","");if(note===null)return;if(!window.confirm("Record decision '"+action[0]+"' for test #"+test.id+"? This does not change live Android predictions."))return;try{const result=await api("/api/owner/recommendation-tests/"+test.id+"/decision",{method:"POST",body:JSON.stringify({decision:action[0],note:note})});setRecommendationNotice(result.message,false);await loadRecommendationTests()}catch(error){setRecommendationNotice(error.message,true)}});
+   actions.appendChild(button)
+  });
+  item.appendChild(actions);box.appendChild(item)
+ })
+}
+async function loadRecommendationTests(){
+ try{const data=await api("/api/owner/recommendation-tests");recommendationTests=data.tests||[];renderRecommendationTests();if(data.versionState){$("rtNotice").textContent="Approved record: "+data.versionState.approved_version+". Live runtime applied: "+String(data.versionState.runtime_applied)+". "+data.runtimeNotice;$("rtNotice").className="muted"}}
+ catch(error){setRecommendationNotice("Could not load recommendation tests: "+error.message,true)}
+}
+async function loadRecommendationFixtures(){
+ try{
+  const data=await api("/api/owner/recommendation-test-fixtures?limit=150");recommendationFixtures=data.fixtures||[];
+  const box=$("rtFixtureList");box.replaceChildren();
+  if(!recommendationFixtures.length){box.textContent="No eligible completed fixtures are available yet. Predictions must have been saved before kickoff and have recorded actual scores.";return}
+  const selectAll=document.createElement("button");selectAll.type="button";selectAll.textContent="Select all loaded different fixtures";selectAll.addEventListener("click",function(){box.querySelectorAll('input[type="checkbox"]').forEach(function(input){input.checked=true})});box.appendChild(selectAll);
+  const clearAll=document.createElement("button");clearAll.type="button";clearAll.textContent="Clear selection";clearAll.style.background="#42546a";clearAll.addEventListener("click",function(){box.querySelectorAll('input[type="checkbox"]').forEach(function(input){input.checked=false})});box.appendChild(clearAll);
+  recommendationFixtures.forEach(function(fixture){const row=document.createElement("label");row.style.display="flex";row.style.alignItems="flex-start";row.style.gap="10px";row.style.borderTop="1px solid #29435c";row.style.padding="10px 0";const input=document.createElement("input");input.type="checkbox";input.value=String(fixture.id);input.style.width="auto";input.style.marginTop="4px";const textNode=document.createElement("span");textNode.textContent=fixture.home_team+" vs "+fixture.away_team+" • "+fixture.competition+" • "+fixture.actual_home_goals+"-"+fixture.actual_away_goals+" • "+new Date(fixture.kickoff_at).toLocaleDateString();row.appendChild(input);row.appendChild(textNode);box.appendChild(row)})
+ }catch(error){$("rtFixtureList").textContent="Could not load eligible fixtures: "+error.message;setRecommendationNotice(error.message,true)}
+}
+$("rtCreate").addEventListener("click",async function(){
+ const title=$("rtTitle").value.trim(),description=$("rtDescription").value.trim();
+ const candidateSettings={homeGoalMultiplier:Number($("rtHomeMultiplier").value),awayGoalMultiplier:Number($("rtAwayMultiplier").value),lowScoreRho:Number($("rtRho").value)};
+ if(!title||!description){setRecommendationNotice("Enter a test name and description.",true);return}
+ if(!Number.isFinite(candidateSettings.homeGoalMultiplier)||candidateSettings.homeGoalMultiplier<0.5||candidateSettings.homeGoalMultiplier>1.5||!Number.isFinite(candidateSettings.awayGoalMultiplier)||candidateSettings.awayGoalMultiplier<0.5||candidateSettings.awayGoalMultiplier>1.5||!Number.isFinite(candidateSettings.lowScoreRho)||candidateSettings.lowScoreRho< -0.08||candidateSettings.lowScoreRho>0.08){setRecommendationNotice("Check the supported setting ranges shown above.",true);return}
+ try{const result=await api("/api/owner/recommendation-tests",{method:"POST",body:JSON.stringify({title:title,description:description,candidateSettings:candidateSettings})});setRecommendationNotice(result.message,false);await loadRecommendationTests()}catch(error){setRecommendationNotice(error.message,true)}
+});
+$("rtRefresh").addEventListener("click",loadRecommendationTests);
+$("rtLoadFixtures").addEventListener("click",loadRecommendationFixtures);
+$("rtEvaluate").addEventListener("click",async function(){
+ const testId=$("rtTestSelect").value;const ids=Array.from($("rtFixtureList").querySelectorAll('input[type="checkbox"]:checked')).map(function(input){return Number(input.value)});
+ if(!testId){setRecommendationNotice("Create or select a proposed test first.",true);return}
+ if(ids.length<5||ids.length>150){setRecommendationNotice("Select between 5 and 150 different completed fixtures. At least 30 are needed for approval.",true);return}
+ if(!window.confirm("Confirm that these fixtures were NOT used to design the proposed settings. The tester will compare both approaches on the same fixtures. Continue?"))return;
+ try{const result=await api("/api/owner/recommendation-tests/"+testId+"/evaluate",{method:"POST",body:JSON.stringify({predictionIds:ids,unseenTestSetConfirmed:true})});setRecommendationNotice(result.message,false);await loadRecommendationTests()}catch(error){setRecommendationNotice(error.message,true)}
+});
 if(token)refresh();
 </script></body></html>`);
 });
@@ -464,16 +539,23 @@ app.get("/api/owner/recommendation-test-fixtures", requireOwner, async (req, res
     try {
         await recommendationTestingSchemaReady;
         const result = await dbPool.query(
-            `SELECT id, match_external_id, competition, home_team, away_team, kickoff_at,
+            `SELECT * FROM (
+                SELECT DISTINCT ON (
+                    COALESCE(NULLIF(match_external_id, ''), lower(home_team) || '|' || lower(away_team) || '|' || kickoff_at::text)
+                )
+                    id, match_external_id, competition, home_team, away_team, kickoff_at,
                     predicted_home_goals, predicted_away_goals, home_win_probability,
                     draw_probability, away_win_probability, actual_home_goals, actual_away_goals
-             FROM prediction_history
-             WHERE prediction_status = 'evaluated'
-               AND actual_home_goals IS NOT NULL AND actual_away_goals IS NOT NULL
-               AND kickoff_at IS NOT NULL AND created_at <= kickoff_at
-               AND predicted_home_goals IS NOT NULL AND predicted_away_goals IS NOT NULL
-             ORDER BY kickoff_at DESC
-             LIMIT $1`,
+                FROM prediction_history
+                WHERE prediction_status = 'evaluated'
+                  AND actual_home_goals IS NOT NULL AND actual_away_goals IS NOT NULL
+                  AND kickoff_at IS NOT NULL AND created_at <= kickoff_at
+                  AND predicted_home_goals IS NOT NULL AND predicted_away_goals IS NOT NULL
+                ORDER BY COALESCE(NULLIF(match_external_id, ''), lower(home_team) || '|' || lower(away_team) || '|' || kickoff_at::text),
+                         created_at ASC
+            ) eligible_fixtures
+            ORDER BY kickoff_at DESC
+            LIMIT $1`,
             [limit]
         );
         return res.json({
