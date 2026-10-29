@@ -164,6 +164,11 @@ button{background:#087eaa;border:0;font-weight:700;margin-top:12px;cursor:pointe
 <div id="rtFixtureList" class="muted">Eligible fixtures have not been loaded.</div>
 <button id="rtEvaluate">Evaluate selected matches</button>
 <div id="rtTestList" class="muted">No recommendation tests loaded.</div>
+<h3>FOOTBALL GENIE BET SLIPS</h3>
+<p class="muted">One strongest selection per match. A selection qualifies only at 70% confidence or higher. If no market reaches 70%, the slip records NO HIGH-CONFIDENCE SELECTION. The stored pre-kickoff probabilities choose the selection; actual scores are used only to mark it won or lost.</p>
+<button id="rtLoadBetSlips">Load bet slips for selected test</button>
+<div id="rtBetSlipSummary" class="muted">Select a test and load its bet slips.</div>
+<div id="rtBetSlipList" class="muted">No bet slips loaded.</div>
 </section>
 <section class="panel"><h2>Recent system events</h2><div id="eventList" class="muted">Connect to load events.</div></section>
 </div></main>
@@ -207,6 +212,29 @@ async function loadRecommendationTests(){
  try{const data=await api("/api/owner/recommendation-tests");recommendationTests=data.tests||[];renderRecommendationTests();if(data.versionState){$("rtNotice").textContent="Approved record: "+data.versionState.approved_version+". Live runtime applied: "+String(data.versionState.runtime_applied)+". "+data.runtimeNotice;$("rtNotice").className="muted"}}
  catch(error){setRecommendationNotice("Could not load recommendation tests: "+error.message,true)}
 }
+async function loadRecommendationBetSlips(){
+ const testId=$("rtTestSelect").value;
+ const summaryBox=$("rtBetSlipSummary"), listBox=$("rtBetSlipList");
+ summaryBox.textContent="";listBox.replaceChildren();
+ if(!testId){summaryBox.textContent="Create or select a test first.";return}
+ try{
+  const data=await api("/api/owner/recommendation-tests/"+testId+"/bet-slips");
+  const s=data.summary||{};
+  summaryBox.textContent="Matches in batch: "+s.totalMatches+" | High-confidence selections: "+s.highConfidenceSelections+" | Won: "+s.won+" | Lost: "+s.lost+" | No selection: "+s.noSelection+" | Success rate among selections: "+(s.winRatePercent==null?"—":s.winRatePercent+"%")+" | Average confidence: "+(s.averageConfidencePercent==null?"—":s.averageConfidencePercent+"%");
+  if(!data.slips||!data.slips.length){listBox.textContent="No bet slips saved yet. Evaluate the selected completed-match batch first.";return}
+  data.slips.forEach(function(slip){
+   const item=document.createElement("div");item.className="item";
+   const heading=document.createElement("strong");heading.textContent=safeText(slip.home_team)+" vs "+safeText(slip.away_team);item.appendChild(heading);
+   const competition=document.createElement("div");competition.className="muted";competition.textContent=safeText(slip.competition)+" • "+(slip.kickoff_at?new Date(slip.kickoff_at).toLocaleDateString():"Kickoff unknown");item.appendChild(competition);
+   const pick=document.createElement("div");pick.textContent=slip.selection?("BET SLIP: "+slip.market+" — "+slip.selection+" ("+slip.confidence+"% confidence)"):"NO HIGH-CONFIDENCE SELECTION — no available market reached 70%.";item.appendChild(pick);
+   const outcome=document.createElement("div");outcome.className="muted";outcome.textContent="Actual score: "+slip.actual_home_goals+"-"+slip.actual_away_goals+" • "+(slip.selection_status==="won"?"WON":slip.selection_status==="lost"?"LOST":"NO SELECTION");item.appendChild(outcome);
+   listBox.appendChild(item);
+  });
+ }catch(error){summaryBox.textContent="Could not load bet slips: "+error.message}
+}
+$("rtLoadBetSlips").addEventListener("click",loadRecommendationBetSlips);
+$("rtTestSelect").addEventListener("change",loadRecommendationBetSlips);
+
 async function loadRecommendationFixtures(){
  try{
   const data=await api("/api/owner/recommendation-test-fixtures?limit=150");recommendationFixtures=data.fixtures||[];
@@ -312,6 +340,22 @@ const recommendationTestingSchemaReady = dbPool
             INSERT INTO recommendation_engine_state (state_key, approved_version, runtime_applied, change_note)
             VALUES ('prediction_model', 'baseline-v1', FALSE, 'Baseline version; no candidate has been approved.')
             ON CONFLICT (state_key) DO NOTHING
+        `))
+        .then(() => dbPool.query(`
+            CREATE TABLE IF NOT EXISTS recommendation_bet_slips (
+                id BIGSERIAL PRIMARY KEY,
+                test_id BIGINT NOT NULL REFERENCES recommendation_tests(id) ON DELETE CASCADE,
+                prediction_id BIGINT NOT NULL REFERENCES prediction_history(id) ON DELETE CASCADE,
+                market VARCHAR(40),
+                selection VARCHAR(80),
+                confidence NUMERIC(5,2),
+                threshold_percent NUMERIC(5,2) NOT NULL DEFAULT 70,
+                selection_status VARCHAR(20) NOT NULL,
+                actual_home_goals INTEGER NOT NULL,
+                actual_away_goals INTEGER NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                UNIQUE (test_id, prediction_id)
+            )
         `))
         .catch(error => {
             console.error("Recommendation testing schema migration failed:", error.message);
@@ -456,6 +500,49 @@ app.post("/api/owner/predictions/:id/result", requireOwner, async (req, res) => 
         return res.status(503).json({ error: "Unable to record the actual result." });
     }
 });
+
+function chooseHighConfidenceBet(saved, actualHomeGoals, actualAwayGoals) {
+    const candidates = [];
+    const add = (market, selection, rawConfidence) => {
+        if (rawConfidence === null || rawConfidence === undefined || rawConfidence === "") return;
+        const confidence = Number(rawConfidence);
+        if (Number.isFinite(confidence) && confidence >= 0 && confidence <= 100) {
+            candidates.push({ market, selection, confidence: Number(confidence.toFixed(2)) });
+        }
+    };
+    add("Match Result", "Home Win", saved.home_win_probability);
+    add("Match Result", "Draw", saved.draw_probability);
+    add("Match Result", "Away Win", saved.away_win_probability);
+    add("Goals 2.5", "Over 2.5 Goals", saved.over_25_probability);
+    add("Goals 2.5", "Under 2.5 Goals", saved.under_25_probability);
+    if (saved.btts_probability !== null && saved.btts_probability !== undefined && saved.btts_probability !== "") {
+        const btts = Number(saved.btts_probability);
+        if (Number.isFinite(btts) && btts >= 0 && btts <= 100) {
+            add("Both Teams to Score", "Yes", btts);
+            add("Both Teams to Score", "No", 100 - btts);
+        }
+    }
+    candidates.sort((a, b) => b.confidence - a.confidence);
+    const best = candidates[0];
+    if (!best || best.confidence < 70) {
+        return { market: null, selection: null, confidence: null, status: "no_selection" };
+    }
+    let actualSelection;
+    if (best.market === "Match Result") {
+        actualSelection = actualHomeGoals > actualAwayGoals ? "Home Win"
+            : actualHomeGoals === actualAwayGoals ? "Draw" : "Away Win";
+    } else if (best.market === "Goals 2.5") {
+        actualSelection = actualHomeGoals + actualAwayGoals > 2.5 ? "Over 2.5 Goals" : "Under 2.5 Goals";
+    } else {
+        actualSelection = actualHomeGoals > 0 && actualAwayGoals > 0 ? "Yes" : "No";
+    }
+    return {
+        market: best.market,
+        selection: best.selection,
+        confidence: best.confidence,
+        status: best.selection === actualSelection ? "won" : "lost"
+    };
+}
 
 // Recommendation Testing Engine — owner-only proposal, fair-test, decision, and version history.
 // A candidate is never treated as successful just because it was proposed. Evaluation requires
@@ -625,6 +712,7 @@ app.post("/api/owner/recommendation-tests/:id/evaluate", requireOwner, async (re
             `SELECT id, match_external_id, competition, home_team, away_team, kickoff_at, created_at,
                     predicted_home_goals, predicted_away_goals, predicted_home_xg, predicted_away_xg,
                     home_win_probability, draw_probability, away_win_probability,
+                    over_25_probability, under_25_probability, btts_probability,
                     actual_home_goals, actual_away_goals, prediction_status
              FROM prediction_history
              WHERE id = ANY($1::bigint[])
@@ -756,8 +844,24 @@ app.post("/api/owner/recommendation-tests/:id/evaluate", requireOwner, async (re
                 baselineResultChances: baselineChances.map(value => Number((value * 100).toFixed(2))),
                 candidateResultChances: candidateChances.map(value => Number((value * 100).toFixed(2))),
                 baselineBrier,
-                candidateBrier
+                candidateBrier,
+                betSlip: chooseHighConfidenceBet(saved, actualHome, actualAway)
             });
+        }
+
+        // Freeze one strongest qualifying selection (or an explicit no-selection record) for each
+        // match in this test batch. Conflict handling keeps the first snapshot immutable on reruns.
+        for (const item of sample) {
+            const slip = item.betSlip;
+            await dbPool.query(
+                `INSERT INTO recommendation_bet_slips
+                    (test_id, prediction_id, market, selection, confidence, threshold_percent,
+                     selection_status, actual_home_goals, actual_away_goals)
+                 VALUES ($1,$2,$3,$4,$5,70,$6,$7,$8)
+                 ON CONFLICT (test_id, prediction_id) DO NOTHING`,
+                [id, item.predictionId, slip.market, slip.selection, slip.confidence, slip.status,
+                 item.actualHomeGoals, item.actualAwayGoals]
+            );
         }
 
         const count = sample.length;
@@ -833,6 +937,52 @@ app.post("/api/owner/recommendation-tests/:id/evaluate", requireOwner, async (re
     } catch (error) {
         console.error("Evaluating recommendation test failed:", error.message);
         return res.status(503).json({ error: "Unable to evaluate this recommendation test." });
+    }
+});
+
+app.get("/api/owner/recommendation-tests/:id/bet-slips", requireOwner, async (req, res) => {
+    if (!dbPool) return res.status(503).json({ error: "Database is not configured." });
+    const id = Number(req.params.id);
+    if (!Number.isSafeInteger(id) || id <= 0) {
+        return res.status(400).json({ error: "A valid recommendation test ID is required." });
+    }
+    try {
+        await recommendationTestingSchemaReady;
+        const result = await dbPool.query(
+            `SELECT s.id, s.test_id, s.prediction_id, p.home_team, p.away_team, p.competition,
+                    p.kickoff_at, s.market, s.selection, s.confidence, s.threshold_percent,
+                    s.selection_status, s.actual_home_goals, s.actual_away_goals, s.created_at
+             FROM recommendation_bet_slips s
+             JOIN prediction_history p ON p.id = s.prediction_id
+             WHERE s.test_id = $1
+             ORDER BY p.kickoff_at ASC, s.id ASC`,
+            [id]
+        );
+        const slips = result.rows;
+        const placed = slips.filter(slip => slip.selection_status === "won" || slip.selection_status === "lost");
+        const won = placed.filter(slip => slip.selection_status === "won").length;
+        const lost = placed.filter(slip => slip.selection_status === "lost").length;
+        const noSelection = slips.filter(slip => slip.selection_status === "no_selection").length;
+        const averageConfidence = placed.length
+            ? placed.reduce((sum, slip) => sum + Number(slip.confidence), 0) / placed.length : null;
+        return res.json({
+            testId: id,
+            thresholdPercent: 70,
+            summary: {
+                totalMatches: slips.length,
+                highConfidenceSelections: placed.length,
+                won,
+                lost,
+                noSelection,
+                winRatePercent: placed.length ? Number((won * 100 / placed.length).toFixed(2)) : null,
+                averageConfidencePercent: averageConfidence === null ? null : Number(averageConfidence.toFixed(2))
+            },
+            slips,
+            note: "Selections are chosen from stored pre-kickoff probabilities only. A match with no market at or above 70% remains in the batch and is recorded as no selection."
+        });
+    } catch (error) {
+        console.error("Loading recommendation bet slips failed:", error.message);
+        return res.status(503).json({ error: "Unable to load bet slips for this test." });
     }
 });
 
