@@ -480,7 +480,7 @@ async function syncVerifiedFinishedResults() {
     let pending;
     try {
         pending = await dbPool.query(
-            `SELECT DISTINCT match_external_id
+            `SELECT match_external_id, MAX(kickoff_at) AS latest_kickoff
              FROM prediction_history
              WHERE match_external_id IS NOT NULL
                AND kickoff_at >= NOW() - INTERVAL '30 days'
@@ -488,7 +488,8 @@ async function syncVerifiedFinishedResults() {
                AND actual_home_goals IS NULL
                AND actual_away_goals IS NULL
                AND prediction_status <> 'cancelled'
-             ORDER BY kickoff_at DESC, match_external_id
+             GROUP BY match_external_id
+             ORDER BY latest_kickoff DESC, match_external_id
              LIMIT 30`
         );
     } catch (error) {
