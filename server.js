@@ -473,6 +473,94 @@ app.post("/api/predictions", async (req, res) => {
     }
 });
 
+// Best-effort automatic settlement using confirmed Football-Data.org full-time results.
+const verifiedResultCache = new Map();
+async function syncVerifiedFinishedResults() {
+    if (!dbPool || !API_TOKEN) return;
+    let pending;
+    try {
+        pending = await dbPool.query(
+            `SELECT DISTINCT match_external_id
+             FROM prediction_history
+             WHERE match_external_id IS NOT NULL
+               AND kickoff_at >= NOW() - INTERVAL '30 days'
+               AND kickoff_at < NOW()
+               AND actual_home_goals IS NULL
+               AND actual_away_goals IS NULL
+               AND prediction_status <> 'cancelled'
+             ORDER BY match_external_id
+             LIMIT 3`
+        );
+    } catch (error) {
+        console.error("Finding pending results for automatic settlement failed:", error.message);
+        return;
+    }
+    for (const row of pending.rows) {
+        const matchId = String(row.match_external_id || "").trim();
+        if (!/^\d+$/.test(matchId)) continue;
+        const cached = verifiedResultCache.get(matchId);
+        if (cached && cached.expiresAt > Date.now()) {
+            if (cached.result) await saveVerifiedResult(matchId, cached.result.home, cached.result.away);
+            continue;
+        }
+        try {
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), 8000);
+            let response;
+            try {
+                response = await fetch(`https://api.football-data.org/v4/matches/${encodeURIComponent(matchId)}`, {
+                    method: "GET",
+                    headers: { "X-Auth-Token": API_TOKEN, "Accept": "application/json" },
+                    signal: controller.signal
+                });
+            } finally {
+                clearTimeout(timeout);
+            }
+            if (!response.ok) {
+                verifiedResultCache.set(matchId, { expiresAt: Date.now() + (response.status === 429 ? 120000 : 60000), result: null });
+                console.warn("Verified result lookup unavailable for fixture", matchId, "HTTP", response.status);
+                continue;
+            }
+            const match = await response.json();
+            const home = match && match.score && match.score.fullTime && match.score.fullTime.home;
+            const away = match && match.score && match.score.fullTime && match.score.fullTime.away;
+            if (match.status !== "FINISHED" || !Number.isInteger(home) || !Number.isInteger(away) ||
+                home < 0 || away < 0 || home > 20 || away > 20) {
+                verifiedResultCache.set(matchId, { expiresAt: Date.now() + 180000, result: null });
+                continue;
+            }
+            const result = { home, away };
+            verifiedResultCache.set(matchId, { expiresAt: Date.now() + 600000, result });
+            await saveVerifiedResult(matchId, home, away);
+        } catch (error) {
+            verifiedResultCache.set(matchId, { expiresAt: Date.now() + 60000, result: null });
+            console.error("Verified result lookup failed for fixture", matchId, error.message);
+        }
+    }
+}
+async function saveVerifiedResult(matchId, homeGoals, awayGoals) {
+    try {
+        const updated = await dbPool.query(
+            `UPDATE prediction_history
+             SET actual_home_goals = $1, actual_away_goals = $2,
+                 prediction_status = 'evaluated', evaluated_at = NOW()
+             WHERE match_external_id = $3
+               AND actual_home_goals IS NULL AND actual_away_goals IS NULL
+               AND prediction_status <> 'cancelled'`,
+            [homeGoals, awayGoals, matchId]
+        );
+        if (updated.rowCount > 0) {
+            void logSystemEvent("prediction_result_synced", "success",
+                "A confirmed full-time result was automatically added to saved predictions.", {
+                    matchExternalId: matchId, actualHomeGoals: homeGoals,
+                    actualAwayGoals: awayGoals, predictionsUpdated: updated.rowCount
+                });
+        }
+    } catch (error) {
+        console.error("Saving verified full-time result failed for fixture", matchId, error.message);
+    }
+}
+
 // Public app-facing bet slips are scoped to the anonymous app install ID.
 // Only pre-kickoff snapshots are returned; client IDs and other users' records are never exposed.
 app.get("/api/bet-slips", async (req, res) => {
@@ -483,6 +571,8 @@ app.get("/api/bet-slips", async (req, res) => {
     const limit = Number.isFinite(requestedLimit) ? Math.max(1, Math.min(150, Math.floor(requestedLimit))) : 100;
     try {
         await Promise.all([predictionSchemaReady, recommendationTestingSchemaReady]);
+        // Provider errors must never prevent saved bet slips from loading.
+        await syncVerifiedFinishedResults();
         const result = await dbPool.query(
             `SELECT p.id, p.match_external_id, p.competition, p.home_team, p.away_team,
                     p.kickoff_at, p.actual_home_goals, p.actual_away_goals, p.prediction_status,
