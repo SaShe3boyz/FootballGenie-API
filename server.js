@@ -488,13 +488,14 @@ async function syncVerifiedFinishedResults() {
                AND actual_home_goals IS NULL
                AND actual_away_goals IS NULL
                AND prediction_status <> 'cancelled'
-             ORDER BY match_external_id
-             LIMIT 3`
+             ORDER BY kickoff_at DESC, match_external_id
+             LIMIT 30`
         );
     } catch (error) {
         console.error("Finding pending results for automatic settlement failed:", error.message);
         return;
     }
+    let providerLookups = 0;
     for (const row of pending.rows) {
         const matchId = String(row.match_external_id || "").trim();
         if (!/^\d+$/.test(matchId)) continue;
@@ -503,6 +504,8 @@ async function syncVerifiedFinishedResults() {
             if (cached.result) await saveVerifiedResult(matchId, cached.result.home, cached.result.away);
             continue;
         }
+        if (providerLookups >= 3) break;
+        providerLookups += 1;
         try {
             const controller = new AbortController();
             const timeout = setTimeout(() => controller.abort(), 8000);
